@@ -53,16 +53,21 @@ def app_icon():
 
 class InputEdit(QPlainTextEdit):
     submit = Signal()
+    HINT = "输入中文或 English，稍停片刻自动翻译…"
 
     def __init__(self):
         super().__init__()
         self.composing = False
+        self.setPlaceholderText(self.HINT)
 
     def inputMethodEvent(self, event):
+        if event.preeditString() or event.commitString():
+            self.setPlaceholderText("")
         self.composing = bool(event.preeditString())
         super().inputMethodEvent(event)
 
     def keyPressEvent(self, event):
+        self.setPlaceholderText("")
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             if not self.composing:
                 self.submit.emit()
@@ -114,7 +119,6 @@ class Popup(QWidget):
         mode_row.addWidget(self.direction)
         layout.addLayout(mode_row)
         self.source = InputEdit()
-        self.source.setPlaceholderText("输入中文或 English，稍停片刻自动翻译…")
         self.source.setMinimumHeight(115)
         self.source.textChanged.connect(self.changed)
         self.source.submit.connect(self.submit)
@@ -386,6 +390,7 @@ class Controller(QObject):
         self.start_popup("")
 
     def start_popup(self, text):
+        self.popup.source.setPlaceholderText(InputEdit.HINT if not text else "")
         self.popup.source.blockSignals(True)
         self.popup.source.setPlainText(text)
         self.popup.source.blockSignals(False)
