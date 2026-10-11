@@ -15,13 +15,17 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
 from translator import native
-from translator.ui import Controller, STYLE
+from translator.ui import Controller, apply_appearance
 
 
 def wait_until(predicate, timeout=15):
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() > deadline:
+            if 'controller' in globals():
+                print('UI timeout:', controller.popup.mode, controller.popup.isVisible(), controller.popup.isActiveWindow(),
+                      controller.popup.status.text(), controller.revision, controller.result_revision,
+                      'busy', controller.busy, 'foreground', native.foreground(), 'keys', controller.hotkeys.keys, flush=True)
             raise AssertionError("Timed out waiting for UI state")
         QTest.qWait(30)
 
@@ -54,8 +58,7 @@ def activate_editor(editor):
 
 
 app = QApplication([])
-app.setStyle("Fusion")
-app.setStyleSheet(STYLE)
+apply_appearance(app)
 app.setQuitOnLastWindowClosed(False)
 original = QMimeData()
 mime = app.clipboard().mimeData()
@@ -65,6 +68,11 @@ if mime:
 controller = Controller(app)
 print('controller created', flush=True)
 controller.notify = lambda message: None
+original_present = controller.popup.present
+def traced_present():
+    original_present()
+    print('popup foreground:', controller.popup.mode, native.foreground() == int(controller.popup.winId()), flush=True)
+controller.popup.present = traced_present
 editor = QPlainTextEdit()
 editor.setWindowTitle("轻译 · 自动验证用临时输入框")
 editor.resize(650, 300)
@@ -116,10 +124,132 @@ try:
     wait_until(lambda: not controller.popup.isVisible())
     assert app.clipboard().text() == chinese
     report["deactivate_closes_and_copies"] = True
-    # F2 belongs to other applications again.
-    assert native.user32.RegisterHotKey(None, 99, 0x4000, 0x71)
-    native.user32.UnregisterHotKey(None, 99)
-    report["f2_released"] = True
+    editor.setPlainText("玩家移动速度")
+    editor.selectAll()
+    activate_editor(editor)
+    key(0x71)
+    wait_until(lambda: controller.popup.isVisible() and controller.popup.candidates.count() >= 3)
+    assert controller.popup.mode == "naming"
+    assert controller.popup.source.toPlainText() == "玩家移动速度"
+    assert controller.current_result() == "playerMoveSpeed"
+    controller.popup.grab().save(str(preview.parent / "naming-preview.png"))
+    chosen = controller.popup.candidates.item(2)
+    chosen_name = chosen.data(Qt.ItemDataRole.UserRole)
+    QTest.mouseClick(controller.popup.candidates.viewport(), Qt.MouseButton.LeftButton,
+                     pos=controller.popup.candidates.visualItemRect(chosen).center())
+    wait_until(lambda: not controller.popup.isVisible() and editor.toPlainText() == chosen_name)
+    assert app.clipboard().text() == chosen_name
+    report["f2_capture_click_third_candidate_paste"] = chosen_name
+
+    editor.clear()
+    activate_editor(editor)
+    key(0x71)
+    wait_until(lambda: controller.popup.isVisible())
+    assert controller.popup.mode == "naming" and not controller.popup.source.toPlainText()
+    controller.popup.source.setPlainText("订单缓存管理器")
+    controller.popup.direction.setCurrentIndex(controller.popup.direction.findData("pascal"))
+    wait_until(lambda: bool(controller.current_result()))
+    assert controller.current_result() == "OrderCacheManager"
+    key(0x0D)
+    wait_until(lambda: editor.toPlainText() == "OrderCacheManager")
+    report["f2_empty_input_pascal_enter"] = editor.toPlainText()
+
+    editor.setPlainText("bank")
+    editor.selectAll()
+    activate_editor(editor)
+    key(0x72)
+    wait_until(lambda: controller.popup.isVisible() and controller.popup.candidates.count() > 1)
+    wait_until(lambda: controller.popup.isActiveWindow())
+    QTest.qWait(150)
+    assert controller.popup.mode == "dictionary" and controller.popup.source.toPlainText() == "bank"
+    assert any("名词" in controller.popup.candidates.item(i).text() for i in range(controller.popup.candidates.count()))
+    print('before edit', native.foreground(), int(controller.popup.winId()), controller.popup.isActiveWindow(), controller.revision, flush=True)
+    controller.popup.source.setPlainText("速度")
+    print('after edit', native.foreground(), int(controller.popup.winId()), controller.popup.isActiveWindow(), controller.revision, flush=True)
+    try:
+        wait_until(lambda: controller.current_result() and controller.popup.candidates.count() > 1)
+    except AssertionError:
+        print('dictionary state:', controller.popup.status.text(), controller.popup.isVisible(), controller.busy, controller.revision, controller.result_revision, flush=True)
+        raise
+    assert any(controller.popup.candidates.item(i).data(Qt.ItemDataRole.UserRole) == "speed" for i in range(controller.popup.candidates.count()))
+    controller.popup.grab().save(str(preview.parent / "dictionary-preview.png"))
+    chosen = controller.popup.candidates.item(1)
+    selected_word = chosen.data(Qt.ItemDataRole.UserRole)
+    QTest.mouseClick(controller.popup.candidates.viewport(), Qt.MouseButton.LeftButton,
+                     pos=controller.popup.candidates.visualItemRect(chosen).center())
+    wait_until(lambda: not controller.popup.isVisible() and editor.toPlainText() == selected_word)
+    report["f3_capture_edit_chinese_click_paste"] = selected_word
+
+    editor.clear()
+    activate_editor(editor)
+    key(0x72)
+    wait_until(lambda: controller.popup.isVisible())
+    assert not controller.popup.source.toPlainText()
+    controller.popup.source.setPlainText("bank")
+    wait_until(lambda: controller.current_result() == "银行")
+    key(0x0D)
+    wait_until(lambda: editor.toPlainText() == "银行")
+    report["f3_empty_input_enter_paste"] = True
+
+    editor.clear()
+    activate_editor(editor)
+    key(0x70)
+    wait_until(lambda: controller.popup.isVisible())
+    controller.popup.source.setPlainText("retain this input")
+    QTest.mouseClick(controller.popup.settings_button, Qt.MouseButton.LeftButton)
+    wait_until(lambda: controller.dialog is not None and controller.dialog.isVisible())
+    dialog = controller.dialog
+    wait_until(lambda: native.foreground() == int(dialog.winId()))
+    QTest.qWait(200)
+    assert controller.popup.isVisible(), "Settings must not dismiss its owner"
+    assert controller.hotkeys.keys is None
+    QTest.mouseClick(dialog.hotkey, Qt.MouseButton.LeftButton)
+    key(0x70)
+    wait_until(lambda: not dialog.hotkey.recording)
+    assert dialog.hotkey.shortcut == "F1", "Current global shortcut must be recordable"
+    QTest.mouseClick(dialog.hotkey, Qt.MouseButton.LeftButton)
+    QTest.keyClick(dialog.hotkey, Qt.Key.Key_T, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+    assert dialog.hotkey.shortcut == "Ctrl+Alt+T"
+    QTest.mouseClick(dialog.hotkey, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(dialog.hotkey, Qt.MouseButton.LeftButton)
+    assert not dialog.hotkey.recording and dialog.hotkey.shortcut == "Ctrl+Alt+T"
+    report["record_existing_hotkey_chord_and_cancel"] = True
+    dialog.grab().save(str(preview.parent / "settings-preview.png"))
+    dialog.device.showPopup()
+    QTest.qWait(180)
+    assert dialog.device.view().isVisible()
+    dialog.device.view().window().grab().save(str(preview.parent / "settings-dropdown.png"))
+    from PySide6.QtGui import QPalette
+    assert dialog.device.view().palette().color(QPalette.ColorRole.Base).lightness() > 230
+    dialog.device.hidePopup()
+    dialog.reject()
+    assert controller.hotkeys.keys is not None
+    wait_until(lambda: controller.popup.isActiveWindow())
+    assert controller.popup.source.toPlainText() == "retain this input"
+    controller.popup.direction.showPopup()
+    QTest.qWait(200)
+    assert controller.popup.isVisible()
+    view = controller.popup.direction.view()
+    item_rect = view.visualRect(view.model().index(1, 0))
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=item_rect.center())
+    wait_until(lambda: controller.popup.direction.currentData() == "zh-en")
+    assert controller.popup.isVisible()
+    report["settings_button_foreground_and_dropdown_selection"] = True
+
+    controller.popup.close()
+    action = next(a for a in controller.menu.actions() if a.text() == "模型与快捷键设置")
+    action.trigger()
+    wait_until(lambda: controller.dialog.isVisible())
+    dialog = controller.dialog
+    wait_until(lambda: native.foreground() == int(dialog.winId()))
+    dialog.hotkey.set_shortcut("Ctrl+Alt+T")
+    dialog.showMinimized()
+    QTest.qWait(100)
+    action.trigger()
+    wait_until(lambda: not dialog.isMinimized() and native.foreground() == int(dialog.winId()))
+    assert controller.dialog is dialog and dialog.hotkey.text() == "Ctrl+Alt+T"
+    dialog.reject()
+    report["tray_settings_restore_existing_window"] = True
     (preview.parent / "native-test.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=True))
 finally:

@@ -83,6 +83,10 @@ def parse_hotkey(text):
         vk = ord(key)
         if mods == 0x4000:
             raise ValueError("字母或数字快捷键需要搭配 Ctrl / Alt / Shift。")
+    elif key in {"SPACE", "TAB", "ENTER", "BACKSPACE", "DELETE", "INSERT", "HOME", "END", "PAGEUP", "PAGEDOWN", "LEFT", "UP", "RIGHT", "DOWN"} and mods != 0x4000:
+        vk = {"SPACE": 0x20, "TAB": 9, "ENTER": 13, "BACKSPACE": 8, "DELETE": 0x2E,
+              "INSERT": 0x2D, "HOME": 0x24, "END": 0x23, "PAGEUP": 0x21,
+              "PAGEDOWN": 0x22, "LEFT": 0x25, "UP": 0x26, "RIGHT": 0x27, "DOWN": 0x28}[key]
     else:
         raise ValueError("请使用 F1–F11 或 Ctrl+Alt+T 这样的组合。")
     return mods, vk
@@ -94,8 +98,11 @@ class Hotkeys(QAbstractNativeEventFilter):
         self.callback = callback
         self.keys = None
 
-    def configure(self, hotkey):
-        parsed = [parse_hotkey(hotkey)]
+    def configure(self, hotkey, naming_hotkey="F2", dictionary_hotkey="F3"):
+        names = (hotkey, naming_hotkey, dictionary_hotkey)
+        parsed = [parse_hotkey(name) for name in names]
+        if len(set(parsed)) != len(parsed):
+            raise ValueError("翻译、代码命名与字典不能使用相同的快捷键。")
         previous = self.keys
         self.unregister()
         for ident, (mods, vk) in enumerate(parsed, 1):
@@ -105,16 +112,17 @@ class Hotkeys(QAbstractNativeEventFilter):
                     for old_id, (old_mods, old_vk) in enumerate(previous, 1):
                         user32.RegisterHotKey(None, old_id, old_mods, old_vk)
                     self.keys = previous
-                raise ValueError(f"快捷键 {hotkey} 已被其他程序占用，请修改。")
+                raise ValueError(f"快捷键 {names[ident - 1]} 已被其他程序占用，请修改。")
         self.keys = parsed
 
     def unregister(self):
-        user32.UnregisterHotKey(None, 1)
+        for ident in (1, 2, 3):
+            user32.UnregisterHotKey(None, ident)
         self.keys = None
 
     def nativeEventFilter(self, event_type, message):
         msg = wintypes.MSG.from_address(int(message))
-        if msg.message == 0x0312 and msg.wParam == 1:
+        if msg.message == 0x0312 and msg.wParam in (1, 2, 3):
             self.callback(int(msg.wParam))
             return True, 0
         return False, 0

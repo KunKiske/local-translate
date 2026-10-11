@@ -14,6 +14,8 @@ class Settings:
     device: str = "cpu"
     compute_type: str = "int8"
     hotkey: str = "F1"
+    naming_hotkey: str = "F2"
+    dictionary_hotkey: str = "F3"
     debounce_ms: int = 550
 
     @classmethod

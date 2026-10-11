@@ -21,6 +21,30 @@ def test_hotkey_validation():
             parse_hotkey(invalid)
 
 
+def test_three_hotkeys_conflict_and_registration_rollback(monkeypatch):
+    from translator import native
+    occupied = {}
+    def register(hwnd, ident, mods, vk):
+        if vk == ord("X"):
+            return False
+        occupied[ident] = (mods, vk)
+        return True
+    monkeypatch.setattr(native.user32, "RegisterHotKey", register)
+    monkeypatch.setattr(native.user32, "UnregisterHotKey", lambda hwnd, ident: occupied.pop(ident, None))
+    keys = native.Hotkeys(lambda ident: None)
+    keys.configure("F1", "F2", "F3")
+    previous = dict(occupied)
+    with pytest.raises(ValueError, match="相同"):
+        keys.configure("F1", "F2", "F1")
+    assert occupied == previous
+    with pytest.raises(ValueError, match="占用"):
+        keys.configure("Ctrl+Alt+T", "F2", "Ctrl+X")
+    assert occupied == previous
+    assert keys.keys == list(previous.values())
+    keys.unregister()
+    assert not occupied
+
+
 def test_missing_model(tmp_path):
     with pytest.raises(ValueError, match="model.bin"):
         validate_model(str(tmp_path))

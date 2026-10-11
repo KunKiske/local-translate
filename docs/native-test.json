@@ -1,6 +1,12 @@
 {
   "f1_no_selection_input_and_enter_paste": "Hello, it's nice to see you today.",
-  "f1_capture_and_restore": "请明天寄给我文件.",
+  "f1_capture_and_restore": "请明天把文件寄给我.",
   "deactivate_closes_and_copies": true,
-  "f2_released": true
+  "f2_capture_click_third_candidate_paste": "moveSpeed",
+  "f2_empty_input_pascal_enter": "OrderCacheManager",
+  "f3_capture_edit_chinese_click_paste": "speed",
+  "f3_empty_input_enter_paste": true,
+  "record_existing_hotkey_chord_and_cancel": true,
+  "settings_button_foreground_and_dropdown_selection": true,
+  "tray_settings_restore_existing_window": true
 }

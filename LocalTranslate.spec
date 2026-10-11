@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('data/dictionary.sqlite3', 'data'), ('data/ECDICT-LICENSE.txt', 'data')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('ctranslate2')

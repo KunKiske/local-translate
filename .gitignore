@@ -5,4 +5,8 @@ build/
 dist/
 *.log
 *.lnk
+data/ecdict.csv
+data/dictionary.sqlite3
+data/dictionary.tmp
+data/*.download
 
