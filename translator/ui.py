@@ -3,12 +3,12 @@ from pathlib import Path
 import threading
 import time
 
-from PySide6.QtCore import Qt, QEvent, QObject, QThread, QTimer, Signal, Slot, QMimeData, QSize
-from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPixmap, QPalette
+from PySide6.QtCore import Qt, QEvent, QObject, QThread, QTimer, Signal, Slot, QMimeData, QSize, QRect
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QPainter, QPixmap, QPalette
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
-    QSystemTrayIcon, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QStackedWidget, QStyleFactory, QSpinBox,
+    QSystemTrayIcon, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QStackedWidget, QStyleFactory, QSpinBox, QStyledItemDelegate, QStyle,
 )
 
 from .config import Settings
@@ -118,6 +118,49 @@ class InputEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+class CandidateDelegate(QStyledItemDelegate):
+    """Dictionary rows have aligned title/POS and a separate, elided description."""
+    DETAILS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+
+    def paint(self, painter, option, index):
+        fields = index.data(self.DETAILS_ROLE)
+        if fields is None:
+            return super().paint(painter, option, index)
+        title, pos, description = fields
+        painter.save()
+        painter.setClipRect(option.rect)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = option.rect.adjusted(0, 1, -2, -2)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        if selected or hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#c9def8" if selected else "#dceafb"))
+            painter.drawRoundedRect(rect, 5, 5)
+        content = rect.adjusted(10, 5, -10, -5)
+        font = QFont(option.font)
+        metrics = QFontMetrics(font)
+        line_height = metrics.height()
+        pos_width = min(metrics.horizontalAdvance(pos) + 12, content.width() // 2)
+        pos_rect = QRect(content.right() - pos_width, content.top(), pos_width, line_height)
+        painter.setFont(font)
+        painter.setPen(QColor("#56718e"))
+        painter.drawText(pos_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                         metrics.elidedText(pos, Qt.TextElideMode.ElideRight, pos_width))
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor("#183b65"))
+        title_rect = QRect(content.left(), content.top(), max(0, content.width() - pos_width - 12), line_height)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         QFontMetrics(font).elidedText(title, Qt.TextElideMode.ElideRight, title_rect.width()))
+        painter.setFont(option.font)
+        painter.setPen(QColor("#476584"))
+        detail_rect = QRect(content.left(), content.top() + line_height + 3, content.width(), line_height)
+        painter.drawText(detail_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         metrics.elidedText(description, Qt.TextElideMode.ElideRight, content.width()))
+        painter.restore()
+
+
 class Popup(QWidget):
     changed = Signal()
     submit = Signal()
@@ -182,6 +225,7 @@ class Popup(QWidget):
         self.candidates = QListWidget()
         self.candidates.setObjectName("names")
         self.candidates.setMinimumHeight(80)
+        self.candidates.setItemDelegate(CandidateDelegate(self.candidates))
         self.candidates.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.candidates.itemClicked.connect(lambda item: self.candidate_chosen.emit())
         self.candidates.installEventFilter(self)
@@ -243,10 +287,14 @@ class Popup(QWidget):
             title = candidate["name"]
             label = candidate["label"]
             detail = candidate["detail"]
-            # Keep rows compact; full definitions remain available in the tooltip.
-            text = title + "\n" + label + (" · " + detail if title not in detail else "")
+            word, _, pos = label.partition(" · ")
+            # Chinese lookup already uses the English headword as its title.
+            # English lookup uses a Chinese sense; retain the source word below it.
+            description = detail if title.casefold() == word.casefold() else "原词：" + word
+            text = title + "\n" + pos + " · " + description
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, title)
+            item.setData(CandidateDelegate.DETAILS_ROLE, (title, pos, description))
             item.setToolTip(label + (" /" + candidate["phonetic"] + "/" if candidate["phonetic"] else "") + "\n" + detail + "\n单击：输出 " + title)
             item.setSizeHint(QSize(0, 50))
             self.candidates.addItem(item)
@@ -570,9 +618,10 @@ class Controller(QObject):
             return
         mode = {1: "translate", 2: "naming", 3: "dictionary"}[ident]
         if self.popup.isVisible():
-            if self.popup.mode != mode:
+            if self.popup.mode == mode:
+                self.popup.close()
+            else:
                 self.start_popup(self.popup.source.toPlainText(), mode)
-            self.popup.source.setFocus()
             return
         target = native.foreground()
         deadline = time.monotonic() + 1.5

@@ -294,3 +294,32 @@ def test_dictionary_mode_switch_and_edits_invalidate_results(controller, monkeyp
     controller.active_job = (old, "run")
     controller.completed(old, [{"name": "跑"}], "")
     assert controller.popup.candidates.count() == 0 and controller.timer.isActive()
+
+
+@pytest.mark.parametrize("ident,mode", [(1, "translate"), (2, "naming"), (3, "dictionary")])
+def test_same_hotkey_toggles_closed_and_copies_ready_result(controller, app, monkeypatch, ident, mode):
+    monkeypatch.setattr(controller, "enqueue", lambda text: None)
+    controller.start_popup("test", mode)
+    controller.timer.stop()
+    controller.result_revision = controller.revision
+    if mode == "translate":
+        controller.popup.output.setPlainText("测试")
+    else:
+        controller.popup.show_candidates([{"name": "测试", "label": "candidate"}])
+    controller.on_hotkey(ident)
+    assert not controller.popup.isVisible()
+    assert app.clipboard().text() == "测试"
+    assert not controller.timer.isActive()
+
+
+def test_toggle_while_working_cancels_without_copying_stale_result(controller, app, monkeypatch):
+    monkeypatch.setattr(controller, "enqueue", lambda text: None)
+    controller.start_popup("test", "dictionary")
+    old_revision = controller.revision
+    app.clipboard().setText("keep")
+    controller.on_hotkey(3)
+    assert not controller.popup.isVisible() and controller.cancel.is_set()
+    controller.active_job = (old_revision, "test")
+    controller.completed(old_revision, [{"name": "stale"}], "")
+    assert app.clipboard().text() == "keep"
+    assert not controller.current_result()
