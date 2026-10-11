@@ -1,5 +1,6 @@
 """Opt-in selection translation with a non-activating, read-only label."""
 import time
+import logging
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QMimeData
 from PySide6.QtGui import QCursor
@@ -179,6 +180,7 @@ class ReadingMode(QObject):
         QTimer.singleShot(35, ready)
 
     def capture(self, token, target):
+        started = time.monotonic()
         clipboard = self.controller.app.clipboard()
         original = QMimeData()
         current = clipboard.mimeData()
@@ -186,6 +188,8 @@ class ReadingMode(QObject):
             for fmt in current.formats():
                 original.setData(fmt, current.data(fmt))
         sequence = native.user32.GetClipboardSequenceNumber()
+        logging.info("Reading copy: token=%s popup_capture=%s context=%s", token,
+                     self.controller.capturing, native.capture_context())
         try:
             native.shortcut("C")
         except Exception as exc:
@@ -200,12 +204,16 @@ class ReadingMode(QObject):
                 return
             if native.user32.GetClipboardSequenceNumber() != sequence:
                 text = clipboard.text().strip()
+                logging.info("Reading received: token=%s elapsed_ms=%.1f chars=%s context=%s", token,
+                             (time.monotonic() - started) * 1000, len(text), native.capture_context())
                 clipboard.setMimeData(original)
                 self.capturing = False
                 if text and token == self.generation and self.available():
                     self.tip.present("正在翻译…", self.anchor)
                     self.controller.enqueue_reading(token, text)
             elif time.monotonic() >= deadline:
+                logging.info("Reading timeout: token=%s elapsed_ms=%.1f context=%s", token,
+                             (time.monotonic() - started) * 1000, native.capture_context())
                 self.capturing = False
             else:
                 QTimer.singleShot(10, poll)

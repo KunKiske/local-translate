@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+import logging
 import threading
 import time
 
@@ -721,16 +722,22 @@ class Controller(QObject):
                 self.start_popup(self.popup.source.toPlainText(), mode)
             return
         target = native.foreground()
+        logging.info("Selection hotkey: mode=%s reading_capture=%s context=%s", mode,
+                     self.reading.capturing, native.capture_context())
         deadline = time.monotonic() + 1.5
+        shortcut = {1: self.settings.hotkey, 2: self.settings.naming_hotkey,
+                    3: self.settings.dictionary_hotkey}[ident]
         def released():
             if native.foreground() != target:
                 return
-            if native.modifiers_pressed():
+            if native.hotkey_pressed(shortcut):
                 if time.monotonic() < deadline:
                     QTimer.singleShot(30, released)
                 return
             self.capture_selection(target, mode)
-        released()
+        # Leave WM_HOTKEY processing before sending Ctrl+C, and let the browser
+        # finish its key-up handling. Waiting also includes the non-modifier key.
+        QTimer.singleShot(30, released)
 
     def open_input(self, target=None, mode="translate"):
         if self.quitting:
@@ -760,6 +767,7 @@ class Controller(QObject):
         self.capturing = True
         self.capture_revision += 1
         capture_id = self.capture_revision
+        started = time.monotonic()
         clipboard = self.app.clipboard()
         original = QMimeData()
         current = clipboard.mimeData()
@@ -767,6 +775,8 @@ class Controller(QObject):
             for fmt in current.formats():
                 original.setData(fmt, current.data(fmt))
         sequence = native.user32.GetClipboardSequenceNumber()
+        logging.info("Selection copy: id=%s snapshot_ms=%.1f sequence=%s context=%s", capture_id,
+                     (time.monotonic() - started) * 1000, sequence, native.capture_context())
         try:
             native.shortcut("C")
         except Exception as exc:
@@ -782,15 +792,20 @@ class Controller(QObject):
             if capture_id != self.capture_revision or self.quitting:
                 return
             if native.foreground() != target:
+                logging.info("Selection cancelled: id=%s focus_changed context=%s", capture_id, native.capture_context())
                 self.capturing = False
                 return
             if native.user32.GetClipboardSequenceNumber() != sequence:
                 text = clipboard.text().strip()
+                logging.info("Selection received: id=%s elapsed_ms=%.1f chars=%s context=%s", capture_id,
+                             (time.monotonic() - started) * 1000, len(text), native.capture_context())
                 clipboard.setMimeData(original)
                 self.capturing = False
                 self.target = target
                 self.start_popup(text, mode)
             elif time.monotonic() >= deadline:
+                logging.info("Selection timeout: id=%s elapsed_ms=%.1f context=%s", capture_id,
+                             (time.monotonic() - started) * 1000, native.capture_context())
                 self.capturing = False
                 self.target = target
                 self.start_popup("", mode)

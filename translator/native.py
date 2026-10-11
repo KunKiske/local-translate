@@ -1,5 +1,6 @@
 """Small, typed Win32 bridge: hotkeys, foreground focus, and keyboard input."""
 import ctypes
+import logging
 from ctypes import wintypes
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Signal
@@ -47,6 +48,35 @@ def foreground():
     return user32.GetForegroundWindow()
 
 
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
+                ("rcCaret", wintypes.RECT)]
+
+
+user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = wintypes.BOOL
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClipboardOwner.restype = wintypes.HWND
+
+
+def capture_context():
+    """Diagnostic metadata only: never record window titles or selected text."""
+    def window_class(hwnd):
+        name = ctypes.create_unicode_buffer(128)
+        if hwnd:
+            user32.GetClassNameW(hwnd, name, len(name))
+        return name.value
+    info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    user32.GetGUIThreadInfo(0, ctypes.byref(info))
+    return {"foreground_class": window_class(foreground()),
+            "focus_class": window_class(info.hwndFocus), "gui_flags": info.flags,
+            "clipboard_owner_class": window_class(user32.GetClipboardOwner()),
+            "modifiers": modifiers_pressed()}
+
+
 def focus(hwnd):
     if not hwnd or not user32.IsWindow(hwnd):
         return False
@@ -56,6 +86,28 @@ def focus(hwnd):
 
 def modifiers_pressed():
     return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in (0x10, 0x11, 0x12, 0x5B, 0x5C))
+
+
+def hotkey_pressed(shortcut_name):
+    _, key = parse_hotkey(shortcut_name)
+    return modifiers_pressed() or bool(user32.GetAsyncKeyState(key) & 0x8000)
+
+
+def mask_alt_menu(modifiers):
+    """An intercepted Alt chord must not become a bare Alt tap in the target app.
+
+    Send a non-character mask before waiting for release, while Alt is down.
+    VK_FF means no mapping; unlike Ctrl or Escape it has no editing command.
+    See AutoHotkey's A_MenuMaskKey documentation for the same Windows behavior.
+    """
+    if not modifiers & 1 or modifiers & 2 or not user32.GetAsyncKeyState(0x12) & 0x8000:
+        return
+    events = (INPUT * 2)()
+    for event, flags in zip(events, (0, 2)):
+        event.type = 1
+        event.ki = KEYBDINPUT(0xFF, 0, flags, 0, 0)
+    if user32.SendInput(2, events, ctypes.sizeof(INPUT)) != 2:
+        raise OSError(ctypes.get_last_error(), "无法屏蔽 Alt 菜单激活")
 
 
 def shortcut(letter):
@@ -123,6 +175,11 @@ class Hotkeys(QAbstractNativeEventFilter):
     def nativeEventFilter(self, event_type, message):
         msg = wintypes.MSG.from_address(int(message))
         if msg.message == 0x0312 and msg.wParam in (1, 2, 3, 4):
+            # This must precede the controller's asynchronous key-release wait.
+            try:
+                mask_alt_menu(int(msg.lParam) & 0xFFFF)
+            except OSError:
+                logging.exception("Could not mask Alt menu activation")
             self.callback(int(msg.wParam))
             return True, 0
         return False, 0

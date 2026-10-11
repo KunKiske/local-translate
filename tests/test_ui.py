@@ -157,6 +157,27 @@ def test_capture_opens_quickly_without_reusing_old_clipboard(controller, app, mo
     assert not controller.capturing and controller.target == 123
 
 
+def test_hotkey_copy_waits_for_letter_release_and_aborts_on_focus_change(controller, monkeypatch):
+    scheduled, captured = [], []
+    held = [True]
+    foreground = [123]
+    monkeypatch.setattr(ui.QTimer, "singleShot", lambda delay, callback: scheduled.append(callback))
+    monkeypatch.setattr(ui.native, "foreground", lambda: foreground[0])
+    monkeypatch.setattr(ui.native, "hotkey_pressed", lambda name: held[0])
+    monkeypatch.setattr(controller, "capture_selection", lambda target, mode: captured.append((target, mode)))
+    controller.on_hotkey(1)
+    assert not captured  # Never send Ctrl+C from inside WM_HOTKEY.
+    scheduled.pop(0)()
+    assert not captured and scheduled
+    held[0] = False
+    scheduled.pop(0)()
+    assert captured == [(123, "translate")]
+    controller.on_hotkey(2)
+    foreground[0] = 456
+    scheduled.pop(0)()
+    assert captured == [(123, "translate")]
+
+
 def naming_ready(controller):
     controller.start_popup("玩家移动速度", "naming")
     controller.timer.stop()
