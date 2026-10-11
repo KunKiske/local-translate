@@ -18,6 +18,7 @@ class Settings:
     dictionary_hotkey: str = "F3"
     reading_hotkey: str = "F4"
     debounce_ms: int = 550
+    simple_ui: bool = False
 
     @classmethod
     def load(cls):

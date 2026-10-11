@@ -430,3 +430,62 @@ def test_reading_queue_does_not_replace_pending_main_translation(controller, mon
     controller.dispatch_next()
     assert dispatched[-1][2] == "reading"
     controller.busy = False
+
+
+def test_simple_preference_saves_without_changing_other_settings(controller, tmp_path, monkeypatch):
+    from translator import config
+    from dataclasses import asdict
+    previous = asdict(controller.settings)
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(controller.hotkeys, "configure", lambda *args: None)
+    controller.show_settings()
+    controller.dialog.simple_ui.setChecked(True)
+    controller.dialog.save()
+    stored = asdict(config.Settings.load())
+    assert stored == {**previous, "simple_ui": True}
+    assert controller.popup.simple and controller.reading.tip.simple
+    action = next(a for a in controller.menu.actions() if a.text() == "模型与快捷键设置")
+    action.trigger()
+    assert controller.dialog.isVisible() and controller.dialog.simple_ui.isChecked()
+
+
+def test_simple_ui_keeps_content_and_errors_and_can_restore(controller):
+    ready(controller, "hello", "你好")
+    popup = controller.popup
+    popup.set_simple(True)
+    assert popup.header.isHidden() and popup.footer.isHidden() and popup.status.isHidden()
+    assert popup.direction.isVisible() and popup.send.isVisible()
+    assert popup.mode_label.isVisible() and popup.mode_label.text() == "中英翻译"
+    assert popup.source.toPlainText() == "hello" and controller.current_result() == "你好"
+    popup.set_status("翻译失败：示例错误", error=True)
+    assert popup.status.isVisible()
+    popup.set_status("翻译完成")
+    assert popup.status.isHidden()
+    popup.set_mode("dictionary")
+    assert popup.mode_bar.isVisible() and popup.direction.isHidden()
+    assert popup.mode_label.isVisible() and popup.mode_label.text() == "离线字典"
+    popup.set_mode("naming")
+    assert popup.mode_label.isVisible() and popup.mode_label.text() == "代码命名"
+    assert popup.direction.isVisible()
+    popup.set_mode("dictionary")
+    popup.set_simple(False)
+    assert popup.header.isVisible() and popup.mode_bar.isVisible() and popup.footer.isVisible()
+    assert popup.direction.isVisible()
+
+
+def test_reading_text_only_tip_offset_and_screen_bounds(app):
+    from PySide6.QtCore import QPoint
+    from translator.reading import ReadingTip
+    tip = ReadingTip()
+    area = app.primaryScreen().availableGeometry()
+    anchor = area.topLeft() + QPoint(20, 20)
+    tip.set_simple(True)
+    tip.present("设计", anchor)
+    assert tip.title.isHidden() and tip.text.text() == "设计"
+    assert tip.pos() == anchor + QPoint(26, 36)
+    tip.present("A longer result for screen-edge placement.", area.bottomRight())
+    assert area.contains(tip.geometry())
+    tip.set_simple(False)
+    assert tip.title.isVisible()
+    tip.close()

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QEvent, QObject, QThread, QTimer, Signal, Slot, Q
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QPainter, QPixmap, QPalette
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
+    QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QCheckBox,
     QSystemTrayIcon, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QStackedWidget, QStyleFactory, QSpinBox, QStyledItemDelegate, QStyle,
 )
 
@@ -184,12 +184,16 @@ class Popup(QWidget):
         self.resize(480, 360)
         self.mode = "translate"
         self.settings_open = False
+        self.simple = False
+        self.status_error = False
         self.choice_by_mode = {"translate": "auto", "naming": "camel", "dictionary": "auto"}
         self.drag_origin = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
-        top = QHBoxLayout()
+        self.header = QWidget()
+        top = QHBoxLayout(self.header)
+        top.setContentsMargins(0, 0, 0, 0)
         brand = QLabel("轻译")
         brand.setObjectName("brand")
         top.addWidget(brand)
@@ -204,8 +208,10 @@ class Popup(QWidget):
         close.setFixedWidth(34)
         close.clicked.connect(self.close)
         top.addWidget(close)
-        layout.addLayout(top)
-        mode_row = QHBoxLayout()
+        layout.addWidget(self.header)
+        self.mode_bar = QWidget()
+        mode_row = QHBoxLayout(self.mode_bar)
+        mode_row.setContentsMargins(0, 0, 0, 0)
         self.mode_label = QLabel("中英翻译")
         mode_row.addWidget(self.mode_label)
         mode_row.addStretch()
@@ -215,7 +221,7 @@ class Popup(QWidget):
             self.direction.addItem(label, value)
         self.direction.currentIndexChanged.connect(self.changed)
         mode_row.addWidget(self.direction)
-        layout.addLayout(mode_row)
+        layout.addWidget(self.mode_bar)
         self.source = InputEdit()
         self.source.setMinimumHeight(80)
         self.source.textChanged.connect(self.changed)
@@ -276,7 +282,31 @@ class Popup(QWidget):
         self.footer.setText("单击输出 · ↑↓ 选择 · Enter 确认" if multiple else "关闭复制 · Enter 粘贴 · Shift+Enter 换行")
         self.send.setText("输出选中 ↵" if multiple else "粘贴并关闭 ↵")
         self.layout().setStretchFactor(self.results, 2 if multiple else 1)
-        self.resize(480, 400 if multiple else 360)
+        self.set_simple(self.simple)
+
+    def input_hint(self):
+        if self.simple:
+            return ""
+        return ("输入中文或英文单词、短语，查看释义与词性…" if self.mode == "dictionary" else
+                "描述一个用途，例如：玩家移动速度；稍停生成候选…" if self.mode == "naming" else InputEdit.HINT)
+
+    def set_simple(self, enabled):
+        self.simple = enabled
+        self.header.setVisible(not enabled)
+        self.mode_label.setVisible(True)
+        self.mode_bar.setVisible(True)
+        self.direction.setVisible(not enabled or self.mode != "dictionary")
+        self.footer.setVisible(not enabled)
+        self.status.setVisible(not enabled or self.status_error)
+        self.output.setPlaceholderText("" if enabled else "译文将显示在这里")
+        self.source.setPlaceholderText(self.input_hint() if not self.source.toPlainText() else "")
+        multiple = self.mode in ("dictionary", "naming")
+        self.resize(480, (320 if multiple else 280) if enabled else (400 if multiple else 360))
+
+    def set_status(self, text, error=False):
+        self.status_error = error
+        self.status.setText(text)
+        self.status.setVisible(not self.simple or error)
 
     def show_candidates(self, candidates):
         self.candidates.clear()
@@ -422,6 +452,10 @@ class SettingsDialog(QDialog):
         self.delay.setSuffix(" ms")
         self.delay.setValue(controller.settings.debounce_ms)
         form.addRow("输入后等待", self.delay)
+        self.simple_ui = QCheckBox("精简界面（保留模式标题）")
+        self.simple_ui.setChecked(controller.settings.simple_ui)
+        self.simple_ui.setToolTip("阅读标签只显示译文；主窗口隐藏软件名称、设置按钮及提示说明。设置仍可从托盘打开。")
+        form.addRow("界面显示", self.simple_ui)
         layout.addLayout(form)
         note = QLabel("CPU 使用处理器，推荐 int8；CUDA 使用 NVIDIA 显卡，可选 float16。\n快捷键点击录制，再次点击或 Esc 取消；保存后生效。字典查询不依赖模型。")
         note.setWordWrap(True)
@@ -475,7 +509,8 @@ class SettingsDialog(QDialog):
                            device=self.device.currentText(), compute_type=self.compute.currentText(),
                            hotkey=self.hotkey.shortcut, naming_hotkey=self.naming_hotkey.shortcut,
                            dictionary_hotkey=self.dictionary_hotkey.shortcut,
-                           reading_hotkey=self.reading_hotkey.shortcut, debounce_ms=self.delay.value())
+                           reading_hotkey=self.reading_hotkey.shortcut, debounce_ms=self.delay.value(),
+                           simple_ui=self.simple_ui.isChecked())
         try:
             validate_model(settings.model_path)
             if settings.device == "cpu" and settings.compute_type in ("float16", "int8_float16"):
@@ -521,6 +556,7 @@ class Controller(QObject):
         self.app = app
         self.settings = Settings.load()
         self.popup = Popup()
+        self.popup.set_simple(self.settings.simple_ui)
         # Prepare native controls/fonts during startup, before the first hotkey.
         # Rendering a hidden widget does not activate it or take keyboard focus.
         self.popup.ensurePolished()
@@ -540,6 +576,7 @@ class Controller(QObject):
         self.dialog = None
         self.hotkeys_suspended = False
         self.reading = ReadingMode(self)
+        self.reading.tip.set_simple(self.settings.simple_ui)
         self.popup.source.selection_requested.connect(self.reading.translate_local)
         self.popup.source.selectionChanged.connect(self.reading.local_selection_changed)
         self.hotkeys = native.Hotkeys(self.on_hotkey)
@@ -625,6 +662,8 @@ class Controller(QObject):
             self.hotkeys.configure(previous.hotkey, previous.naming_hotkey, previous.dictionary_hotkey, previous.reading_hotkey)
             raise
         self.settings = settings
+        self.popup.set_simple(settings.simple_ui)
+        self.reading.tip.set_simple(settings.simple_ui)
         self.update_tray_tip()
         self.preload()
 
@@ -704,7 +743,7 @@ class Controller(QObject):
     def start_popup(self, text, mode="translate"):
         self.reading.dismiss()
         self.popup.set_mode(mode)
-        hint = "输入中文或英文单词、短语，查看释义与词性…" if mode == "dictionary" else "描述一个用途，例如：玩家移动速度；稍停生成候选…" if mode == "naming" else InputEdit.HINT
+        hint = self.popup.input_hint()
         self.popup.source.setPlaceholderText(hint if not text else "")
         self.popup.source.blockSignals(True)
         self.popup.source.setPlainText(text)
@@ -734,7 +773,7 @@ class Controller(QObject):
             self.capturing = False
             self.target = target
             self.start_popup("", mode)
-            self.popup.status.setText("可以直接输入文字。取词未完成：" + str(exc))
+            self.popup.set_status("可以直接输入文字。取词未完成：" + str(exc), error=True)
             return
         # No selection means Ctrl+C leaves the clipboard unchanged. Keep this
         # fallback short so opening an empty input does not wait nearly half a second.
@@ -772,17 +811,17 @@ class Controller(QObject):
         self.popup.send.setEnabled(bool(text))
         self.timer.stop()
         if text:
-            self.popup.status.setText("等待输入完成…")
+            self.popup.set_status("等待输入完成…")
             self.timer.start(min(200, self.settings.debounce_ms) if self.popup.mode == "dictionary" else self.settings.debounce_ms)
         else:
-            self.popup.status.setText("ECDICT 离线词典 · 中文查英文 / 英文查释义" if self.popup.mode == "dictionary" else "一个需求 → 多个候选 · 点击名字输出" if self.popup.mode == "naming" else "本地处理 · 文本不会上传")
+            self.popup.set_status("ECDICT 离线词典 · 中文查英文 / 英文查释义" if self.popup.mode == "dictionary" else "一个需求 → 多个候选 · 点击名字输出" if self.popup.mode == "naming" else "本地处理 · 文本不会上传")
 
     def translate(self):
         text = self.popup.source.toPlainText().strip()
         if not text:
             return
         activity = "正在查询离线词典…" if self.popup.mode == "dictionary" else "正在生成候选名称…" if self.popup.mode == "naming" else "正在本地翻译…"
-        self.popup.status.setText(activity + (" 完成后将自动粘贴。" if self.submit_pending else ""))
+        self.popup.set_status(activity + (" 完成后将自动粘贴。" if self.submit_pending else ""))
         self.enqueue(text)
 
     def enqueue(self, text):
@@ -813,7 +852,7 @@ class Controller(QObject):
         if ident == self.revision:
             if error:
                 self.submit_pending = False
-                self.popup.status.setText(("查询失败：" if self.popup.mode == "dictionary" else "生成失败：" if self.popup.mode == "naming" else "翻译失败：") + error)
+                self.popup.set_status(("查询失败：" if self.popup.mode == "dictionary" else "生成失败：" if self.popup.mode == "naming" else "翻译失败：") + error, error=True)
                 if was_preload:
                     self.notify("模型加载失败：" + error)
             elif was_preload:
@@ -823,16 +862,16 @@ class Controller(QObject):
                 if self.popup.mode == "dictionary":
                     self.popup.show_definitions(result)
                     self.popup.send.setEnabled(bool(result))
-                    self.popup.status.setText(f"ECDICT · 显示 {len(result)} 项 · 单击输出所选词义" if result else "词典未收录；请尝试词语原形或改用翻译模式。")
+                    self.popup.set_status(f"ECDICT · 显示 {len(result)} 项 · 单击输出所选词义" if result else "词典未收录；请尝试词语原形或改用翻译模式。", error=not result)
                     if not result:
                         self.submit_pending = False
                 elif self.popup.mode == "naming":
                     self.popup.show_candidates(result)
-                    self.popup.status.setText(f"生成 {len(result)} 个候选 · 单击名字粘贴并关闭")
+                    self.popup.set_status(f"生成 {len(result)} 个候选 · 单击名字粘贴并关闭")
                 else:
                     self.popup.output.setPlainText(result)
                     src, _ = language_pair(self.popup.source.toPlainText(), self.popup.direction.currentData())
-                    self.popup.status.setText(("中文 → English" if src == "zho_Hans" else "English → 中文") + " · 翻译完成 · 关闭窗口自动复制")
+                    self.popup.set_status(("中文 → English" if src == "zho_Hans" else "English → 中文") + " · 翻译完成 · 关闭窗口自动复制")
                 if self.submit_pending:
                     self.submit()
         self.dispatch_next()
@@ -877,7 +916,7 @@ class Controller(QObject):
                 # Do not requeue an identical in-flight request on repeated Enter.
                 if not self.busy or self.active_job[0] != self.revision:
                     self.translate()
-                self.popup.status.setText("正在查询，完成后将输出首个词义并关闭…" if self.popup.mode == "dictionary" else "正在生成，完成后将输出首个候选并关闭…" if self.popup.mode == "naming" else "正在翻译，完成后将自动粘贴并关闭…")
+                self.popup.set_status("正在查询，完成后将输出首个词义并关闭…" if self.popup.mode == "dictionary" else "正在生成，完成后将输出首个候选并关闭…" if self.popup.mode == "naming" else "正在翻译，完成后将自动粘贴并关闭…")
             return
         target = self.target
         self.popup.close()

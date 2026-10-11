@@ -15,6 +15,8 @@ class ReadingTip(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setObjectName("readingTip")
+        self.simple = False
+        self.last_display = None
         self.setStyleSheet("#readingTip { background: #f4f8fe; border: 1px solid #b9cfe9; border-radius: 7px; }"
                            "QLabel { border: none; background: transparent; color: #183b65; }"
                            "QLabel#readingTitle { color: #718096; font-size: 11px; }")
@@ -29,19 +31,28 @@ class ReadingTip(QWidget):
         self.text.setWordWrap(True)
         layout.addWidget(self.text)
 
+    def set_simple(self, enabled):
+        self.simple = enabled
+        self.title.setVisible(not enabled)
+        if self.isVisible() and self.last_display:
+            self.present(*self.last_display)
+
     def present(self, text, anchor, title="阅读模式"):
+        self.last_display = (text, QPoint(anchor), title)
         self.title.setText(title)
+        self.title.setVisible(not self.simple)
         preview = " ".join(text.split())
         display = preview if len(preview) <= 240 else preview[:240] + "…"
-        width = max(160, self.title.sizeHint().width(), min(296, self.text.fontMetrics().horizontalAdvance(display)))
+        width = max(64 if self.simple else 160, 0 if self.simple else self.title.sizeHint().width(),
+                    min(296, self.text.fontMetrics().horizontalAdvance(display)))
         self.text.setFixedWidth(width)
         self.text.setText(display)
         self.setToolTip(text if display != text else "")
         self.adjustSize()
         screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
         area = screen.availableGeometry()
-        x = min(anchor.x() + 12, area.right() - self.width())
-        y = anchor.y() + 20
+        x = min(anchor.x() + 26, area.right() - self.width())
+        y = anchor.y() + 36
         if y + self.height() > area.bottom():
             y = anchor.y() - self.height() - 12
         self.move(max(area.left(), x), max(area.top(), y))
