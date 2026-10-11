@@ -68,6 +68,21 @@ def test_settings_upgrade_keeps_model_and_one_shortcut(tmp_path, monkeypatch):
     assert data["hotkey"] == "Ctrl+Alt+T"
 
 
+def test_reading_default_preserves_existing_configuration_bytes(tmp_path, monkeypatch):
+    import json
+    from translator import config
+    path = tmp_path / "settings.json"
+    existing = {"model_path": "my-model", "device": "cuda", "compute_type": "float16",
+                "hotkey": "Alt+Q", "naming_hotkey": "Alt+E", "dictionary_hotkey": "Alt+W", "debounce_ms": 100}
+    path.write_text(json.dumps(existing), encoding="utf-8")
+    original = path.read_bytes()
+    monkeypatch.setattr(config, "CONFIG_FILE", path)
+    settings = Settings.load()
+    assert settings.reading_hotkey == "F4"
+    assert all(getattr(settings, key) == value for key, value in existing.items())
+    assert path.read_bytes() == original
+
+
 @pytest.mark.skipif(not Path(Settings().model_path).is_dir(), reason="Local model not installed")
 def test_real_model_bidirectional():
     engine = TranslationEngine()

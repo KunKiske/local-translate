@@ -16,6 +16,7 @@ from .engine import TranslationEngine, language_pair, validate_model
 from .naming import STYLES, generate_names
 from .dictionary import Dictionary
 from .hotkey_edit import HotkeyButton
+from .reading import ReadingMode
 from . import native
 
 STYLE = """
@@ -95,6 +96,7 @@ def app_icon():
 
 class InputEdit(QPlainTextEdit):
     submit = Signal()
+    selection_requested = Signal(str, object)
     HINT = "输入中文或 English，稍停片刻自动翻译…"
 
     def __init__(self):
@@ -116,6 +118,12 @@ class InputEdit(QPlainTextEdit):
                 event.accept()
                 return
         super().keyPressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton and self.textCursor().hasSelection():
+            text = self.textCursor().selectedText().replace('\u2029', '\n')
+            self.selection_requested.emit(text, event.globalPosition().toPoint())
 
 
 class CandidateDelegate(QStyledItemDelegate):
@@ -402,7 +410,9 @@ class SettingsDialog(QDialog):
         form.addRow("代码命名快捷键", self.naming_hotkey)
         self.dictionary_hotkey = HotkeyButton(controller.settings.dictionary_hotkey)
         form.addRow("字典快捷键", self.dictionary_hotkey)
-        self.recorders = (self.hotkey, self.naming_hotkey, self.dictionary_hotkey)
+        self.reading_hotkey = HotkeyButton(controller.settings.reading_hotkey)
+        form.addRow("阅读模式开关", self.reading_hotkey)
+        self.recorders = (self.hotkey, self.naming_hotkey, self.dictionary_hotkey, self.reading_hotkey)
         for recorder in self.recorders:
             recorder.started.connect(self.start_recording)
         self.finished.connect(self.cancel_recording)
@@ -464,7 +474,8 @@ class SettingsDialog(QDialog):
         settings = replace(self.controller.settings, model_path=self.path.text().strip(),
                            device=self.device.currentText(), compute_type=self.compute.currentText(),
                            hotkey=self.hotkey.shortcut, naming_hotkey=self.naming_hotkey.shortcut,
-                           dictionary_hotkey=self.dictionary_hotkey.shortcut, debounce_ms=self.delay.value())
+                           dictionary_hotkey=self.dictionary_hotkey.shortcut,
+                           reading_hotkey=self.reading_hotkey.shortcut, debounce_ms=self.delay.value())
         try:
             validate_model(settings.model_path)
             if settings.device == "cpu" and settings.compute_type in ("float16", "int8_float16"):
@@ -510,18 +521,27 @@ class Controller(QObject):
         self.app = app
         self.settings = Settings.load()
         self.popup = Popup()
+        # Prepare native controls/fonts during startup, before the first hotkey.
+        # Rendering a hidden widget does not activate it or take keyboard focus.
+        self.popup.ensurePolished()
+        self.popup.winId()
+        self.popup.grab()
         self.target = None
         self.revision = 0
         self.result_revision = -1
         self.submit_pending = False
         self.busy = False
         self.pending = None
+        self.reading_pending = None
         self.cancel = threading.Event()
         self.quitting = False
         self.capturing = False
         self.capture_revision = 0
         self.dialog = None
         self.hotkeys_suspended = False
+        self.reading = ReadingMode(self)
+        self.popup.source.selection_requested.connect(self.reading.translate_local)
+        self.popup.source.selectionChanged.connect(self.reading.local_selection_changed)
         self.hotkeys = native.Hotkeys(self.on_hotkey)
         app.installNativeEventFilter(self.hotkeys)
         self.thread = QThread()
@@ -545,6 +565,9 @@ class Controller(QObject):
         menu.addAction("打开翻译窗口", self.open_input)
         menu.addAction("打开代码命名", lambda: self.open_input(mode="naming"))
         menu.addAction("打开字典", lambda: self.open_input(mode="dictionary"))
+        self.reading_action = menu.addAction("阅读模式（自动划词翻译）")
+        self.reading_action.setCheckable(True)
+        self.reading_action.triggered.connect(self.toggle_reading)
         menu.addAction("模型与快捷键设置", self.show_settings)
         menu.addSeparator()
         menu.addAction("退出轻译", self.quit)
@@ -552,9 +575,10 @@ class Controller(QObject):
         self.tray.activated.connect(lambda reason: self.open_input() if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
         self.menu = menu
         self.tray.show()
+        self.update_tray_tip()
         if register_hotkeys:
             try:
-                self.hotkeys.configure(self.settings.hotkey, self.settings.naming_hotkey, self.settings.dictionary_hotkey)
+                self.hotkeys.configure(self.settings.hotkey, self.settings.naming_hotkey, self.settings.dictionary_hotkey, self.settings.reading_hotkey)
             except ValueError as exc:
                 QTimer.singleShot(0, lambda message=str(exc): self.notify(message))
         self.preload()
@@ -562,16 +586,46 @@ class Controller(QObject):
     def notify(self, message):
         self.tray.showMessage("轻译", message, QSystemTrayIcon.MessageIcon.Information, 4000)
 
+    def update_tray_tip(self):
+        s = self.settings
+        self.tray.setToolTip(f"轻译 · {s.hotkey} 翻译 / {s.naming_hotkey} 命名 / {s.dictionary_hotkey} 字典\n"
+                            f"{s.reading_hotkey} 阅读模式：{'开启' if self.reading.enabled else '关闭'}")
+
+    def toggle_reading(self, *_):
+        try:
+            self.reading.set_enabled(not self.reading.enabled)
+        except OSError as exc:
+            self.notify(str(exc))
+        else:
+            self.notify("阅读模式已开启：鼠标划词后自动翻译；再次按 " + self.settings.reading_hotkey + " 关闭。"
+                        if self.reading.enabled else "阅读模式已关闭。")
+        self.reading_action.setChecked(self.reading.enabled)
+        self.update_tray_tip()
+
+    def cancel_reading(self):
+        job = getattr(self, "active_job", ())
+        if self.busy and len(job) > 2 and job[2] == "reading":
+            self.cancel.set()
+        self.reading_pending = None
+
+    def enqueue_reading(self, token, text):
+        self.cancel_reading()
+        job = (-token - 1, text, "reading", "auto", replace(self.settings), threading.Event())
+        if self.busy:
+            self.reading_pending = job
+        else:
+            self.dispatch(job)
+
     def apply_settings(self, settings):
         previous = self.settings
-        self.hotkeys.configure(settings.hotkey, settings.naming_hotkey, settings.dictionary_hotkey)
+        self.hotkeys.configure(settings.hotkey, settings.naming_hotkey, settings.dictionary_hotkey, settings.reading_hotkey)
         try:
             settings.save()
         except OSError:
-            self.hotkeys.configure(previous.hotkey, previous.naming_hotkey, previous.dictionary_hotkey)
+            self.hotkeys.configure(previous.hotkey, previous.naming_hotkey, previous.dictionary_hotkey, previous.reading_hotkey)
             raise
         self.settings = settings
-        self.tray.setToolTip(f"轻译 · {settings.hotkey} 翻译 / {settings.naming_hotkey} 命名 / {settings.dictionary_hotkey} 字典")
+        self.update_tray_tip()
         self.preload()
 
     def preload(self):
@@ -579,6 +633,7 @@ class Controller(QObject):
         self.enqueue(None)
 
     def show_settings(self):
+        self.reading.dismiss()
         self.capture_revision += 1
         self.capturing = False
         self.submit_pending = False
@@ -589,7 +644,7 @@ class Controller(QObject):
             return
         if self.dialog:
             self.dialog.deleteLater()
-        # The existing global bindings must reach Qt while recording (including F1/F2/F3).
+        # Existing global bindings must reach Qt while recording, including F1–F4.
         self.hotkeys_suspended = bool(self.hotkeys.keys)
         if self.hotkeys_suspended:
             self.hotkeys.unregister()
@@ -601,7 +656,7 @@ class Controller(QObject):
         self.popup.settings_open = False
         if self.hotkeys_suspended and not self.quitting and not self.hotkeys.keys:
             try:
-                self.hotkeys.configure(self.settings.hotkey, self.settings.naming_hotkey, self.settings.dictionary_hotkey)
+                self.hotkeys.configure(self.settings.hotkey, self.settings.naming_hotkey, self.settings.dictionary_hotkey, self.settings.reading_hotkey)
             except ValueError as exc:
                 self.notify(str(exc))
         self.hotkeys_suspended = False
@@ -614,7 +669,10 @@ class Controller(QObject):
                 self.edited()
 
     def on_hotkey(self, ident):
-        if ident not in (1, 2, 3) or self.quitting or (self.dialog and self.dialog.isVisible()):
+        if ident not in (1, 2, 3, 4) or self.quitting or (self.dialog and self.dialog.isVisible()):
+            return
+        if ident == 4:
+            self.toggle_reading()
             return
         mode = {1: "translate", 2: "naming", 3: "dictionary"}[ident]
         if self.popup.isVisible():
@@ -644,6 +702,7 @@ class Controller(QObject):
         self.start_popup("", mode)
 
     def start_popup(self, text, mode="translate"):
+        self.reading.dismiss()
         self.popup.set_mode(mode)
         hint = "输入中文或英文单词、短语，查看释义与词性…" if mode == "dictionary" else "描述一个用途，例如：玩家移动速度；稍停生成候选…" if mode == "naming" else InputEdit.HINT
         self.popup.source.setPlaceholderText(hint if not text else "")
@@ -677,7 +736,9 @@ class Controller(QObject):
             self.start_popup("", mode)
             self.popup.status.setText("可以直接输入文字。取词未完成：" + str(exc))
             return
-        deadline = time.monotonic() + 0.4
+        # No selection means Ctrl+C leaves the clipboard unchanged. Keep this
+        # fallback short so opening an empty input does not wait nearly half a second.
+        deadline = time.monotonic() + 0.12
         def poll():
             if capture_id != self.capture_revision or self.quitting:
                 return
@@ -695,10 +756,11 @@ class Controller(QObject):
                 self.target = target
                 self.start_popup("", mode)
             else:
-                QTimer.singleShot(25, poll)
-        QTimer.singleShot(40, poll)
+                QTimer.singleShot(10, poll)
+        QTimer.singleShot(10, poll)
 
     def edited(self):
+        self.reading.local_selection_changed()
         self.revision += 1
         self.cancel.set()
         self.pending = None
@@ -744,6 +806,10 @@ class Controller(QObject):
         if self.quitting:
             self.finish_quit()
             return
+        if len(self.active_job) > 2 and self.active_job[2] == "reading":
+            self.reading.completed(-ident - 1, result, error)
+            self.dispatch_next()
+            return
         if ident == self.revision:
             if error:
                 self.submit_pending = False
@@ -769,8 +835,14 @@ class Controller(QObject):
                     self.popup.status.setText(("中文 → English" if src == "zho_Hans" else "English → 中文") + " · 翻译完成 · 关闭窗口自动复制")
                 if self.submit_pending:
                     self.submit()
+        self.dispatch_next()
+
+    def dispatch_next(self):
         if self.pending:
             job, self.pending = self.pending, None
+            self.dispatch(job)
+        elif self.reading_pending:
+            job, self.reading_pending = self.reading_pending, None
             self.dispatch(job)
 
     def current_result(self):
@@ -782,6 +854,7 @@ class Controller(QObject):
         return self.popup.output.toPlainText().strip()
 
     def dismissed(self):
+        self.reading.dismiss()
         result = self.current_result()
         if result:
             self.app.clipboard().setText(result)
@@ -830,6 +903,7 @@ class Controller(QObject):
 
     def quit(self):
         self.quitting = True
+        self.reading.stop()
         self.hotkeys.unregister()
         self.popup.close()
         if self.dialog:

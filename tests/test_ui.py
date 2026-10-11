@@ -24,6 +24,7 @@ def controller(app, monkeypatch):
     obj = ui.Controller(app, register_hotkeys=False)
     monkeypatch.setattr(obj, "notify", lambda text: None)
     yield obj
+    obj.reading.stop()
     obj.cancel.set()
     obj.pending = None
     if obj.dialog:
@@ -128,6 +129,32 @@ def test_captured_text_remains_editable(controller):
     assert controller.current_result() == ""
     assert controller.timer.isActive()
     assert not controller.popup.source.isReadOnly()
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_capture_opens_quickly_without_reusing_old_clipboard(controller, app, monkeypatch, selected):
+    clock = [0.0]
+    scheduled = []
+    opened = []
+    app.clipboard().setText("old clipboard")
+    monkeypatch.setattr(ui.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ui.native, "foreground", lambda: 123)
+    monkeypatch.setattr(ui.native, "shortcut", lambda key: None)
+    monkeypatch.setattr(ui.native.user32, "GetClipboardSequenceNumber", lambda: 2 if selected and clock[0] >= .03 else 1)
+    monkeypatch.setattr(ui.QTimer, "singleShot", lambda delay, callback: scheduled.append((delay, callback)))
+    monkeypatch.setattr(controller, "start_popup", lambda text, mode: opened.append((clock[0], text, mode)))
+    controller.capture_selection(123, "dictionary")
+    while scheduled and not opened:
+        delay, callback = scheduled.pop(0)
+        clock[0] += delay / 1000
+        if selected and clock[0] >= .03:
+            app.clipboard().setText("selected text")
+        callback()
+    assert len(opened) == 1
+    assert opened[0][0] <= .131
+    assert opened[0][1:] == ("selected text" if selected else "", "dictionary")
+    assert app.clipboard().text() == "old clipboard"
+    assert not controller.capturing and controller.target == 123
 
 
 def naming_ready(controller):
@@ -323,3 +350,83 @@ def test_toggle_while_working_cancels_without_copying_stale_result(controller, a
     controller.completed(old_revision, [{"name": "stale"}], "")
     assert app.clipboard().text() == "keep"
     assert not controller.current_result()
+
+
+def test_reading_toggle_stops_listener_and_rejects_late_result(controller, monkeypatch):
+    calls = []
+    monkeypatch.setattr(controller.reading.mouse, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(controller.reading.mouse, "stop", lambda: calls.append("stop"))
+    controller.on_hotkey(4)
+    assert controller.reading.enabled and controller.reading_action.isChecked()
+    token = controller.reading.generation
+    controller.on_hotkey(4)
+    controller.reading.completed(token, "late result", "")
+    assert not controller.reading.enabled and not controller.reading_action.isChecked()
+    assert not controller.reading.tip.isVisible() and calls == ["start", "stop"]
+
+
+def test_reading_drag_only_and_skip_own_window(controller, monkeypatch):
+    reader = controller.reading
+    monkeypatch.setattr(reader.mouse, "start", lambda: None)
+    monkeypatch.setattr(reader.mouse, "stop", lambda: None)
+    monkeypatch.setattr(ui.native, "foreground", lambda: 123)
+    monkeypatch.setattr(ui.native, "modifiers_pressed", lambda: False)
+    queued, captured = [], []
+    monkeypatch.setattr(ui.QTimer, "singleShot", lambda delay, callback: queued.append(callback))
+    monkeypatch.setattr(reader, "capture", lambda token, target: captured.append(target))
+    reader.set_enabled(True)
+    reader.mouse_event(0x201, 10, 10)
+    reader.mouse_event(0x202, 10, 10)
+    assert not queued
+    reader.mouse_event(0x201, 50, 50)
+    reader.mouse_event(0x202, 130, 50)
+    queued.pop()()
+    assert captured == [123]
+    controller.popup.show()
+    reader.mouse_event(0x201, 50, 50)
+    reader.mouse_event(0x202, 130, 50)
+    assert not queued
+
+
+def test_local_word_tip_without_reading_mode_preserves_sentence_and_clipboard(controller, app, monkeypatch):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QTextCursor
+    monkeypatch.setattr(controller, "enqueue", lambda text: None)
+    ready(controller, "Designing clipboard restoration", "设计剪贴板恢复")
+    original_result = controller.current_result()
+    cursor = controller.popup.source.textCursor()
+    cursor.setPosition(0)
+    cursor.setPosition(9, QTextCursor.MoveMode.KeepAnchor)
+    controller.popup.source.setTextCursor(cursor)
+    monkeypatch.setattr(ui.native, "foreground", lambda: int(controller.popup.winId()))
+    jobs = []
+    monkeypatch.setattr(controller, "enqueue_reading", lambda token, text: jobs.append((token, text)))
+    app.clipboard().setText("unchanged")
+    controller.popup.source.selection_requested.emit("Designing", QPoint(100, 100))
+    assert not controller.reading.enabled and jobs[-1][1] == "Designing"
+    controller.reading.completed(jobs[-1][0], "设计", "")
+    assert controller.reading.tip.text.text() == "设计"
+    assert controller.reading.tip.isVisible()
+    assert controller.current_result() == original_result
+    assert controller.popup.source.toPlainText() == "Designing clipboard restoration"
+    assert app.clipboard().text() == "unchanged"
+    cursor.clearSelection()
+    controller.popup.source.setTextCursor(cursor)
+    assert not controller.reading.tip.isVisible()
+
+
+def test_reading_queue_does_not_replace_pending_main_translation(controller, monkeypatch):
+    controller.busy = True
+    controller.active_job = (1, "loading", "translate")
+    main_job = (2, "main text", "translate")
+    controller.pending = main_job
+    controller.enqueue_reading(10, "word")
+    assert controller.pending is main_job
+    assert controller.reading_pending[1] == "word"
+    dispatched = []
+    monkeypatch.setattr(controller, "dispatch", dispatched.append)
+    controller.dispatch_next()
+    assert dispatched == [main_job]
+    controller.dispatch_next()
+    assert dispatched[-1][2] == "reading"
+    controller.busy = False

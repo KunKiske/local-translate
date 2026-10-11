@@ -52,7 +52,7 @@ def main():
     if not lock.tryLock(100):
         from translator.config import Settings
         settings = Settings.load()
-        QMessageBox.information(None, "轻译已在运行", f"{settings.hotkey} 翻译，{settings.naming_hotkey} 代码命名，{settings.dictionary_hotkey} 字典。也可右键系统托盘中的“译”图标打开设置。")
+        QMessageBox.information(None, "轻译已在运行", f"{settings.hotkey} 翻译，{settings.naming_hotkey} 代码命名，{settings.dictionary_hotkey} 字典，{settings.reading_hotkey} 阅读模式开关。也可右键系统托盘中的“译”图标打开设置。")
         return 0
     controller = Controller(app)
     def exception_hook(exc_type, value, traceback):

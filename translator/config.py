@@ -16,6 +16,7 @@ class Settings:
     hotkey: str = "F1"
     naming_hotkey: str = "F2"
     dictionary_hotkey: str = "F3"
+    reading_hotkey: str = "F4"
     debounce_ms: int = 550
 
     @classmethod

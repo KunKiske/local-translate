@@ -39,6 +39,19 @@ def key(vk):
     assert native.user32.SendInput(2, events, ctypes.sizeof(native.INPUT)) == 2
 
 
+def hotkey(ident):
+    settings = controller.settings
+    name = {1: settings.hotkey, 2: settings.naming_hotkey, 3: settings.dictionary_hotkey}[ident]
+    mods, vk = native.parse_hotkey(name)
+    held = [code for flag, code in ((2, 0x11), (1, 0x12), (4, 0x10), (8, 0x5B)) if mods & flag]
+    presses = [(code, 0) for code in held] + [(vk, 0), (vk, 2)] + [(code, 2) for code in reversed(held)]
+    events = (native.INPUT * len(presses))()
+    for event, (code, flags) in zip(events, presses):
+        event.type = 1
+        event.ki = native.KEYBDINPUT(code, 0, flags, 0, 0)
+    assert native.user32.SendInput(len(events), events, ctypes.sizeof(native.INPUT)) == len(events)
+
+
 def activate_editor(editor):
     # Test setup starts in a background shell; attach only long enough to focus
     # the disposable test editor. The product never forces a background window.
@@ -65,13 +78,17 @@ mime = app.clipboard().mimeData()
 if mime:
     for fmt in mime.formats():
         original.setData(fmt, mime.data(fmt))
+if "--latency-only" in sys.argv:
+    Controller.preload = lambda self: None
 controller = Controller(app)
 print('controller created', flush=True)
 controller.notify = lambda message: None
 original_present = controller.popup.present
 def traced_present():
+    before_present = time.perf_counter()
     original_present()
-    print('popup foreground:', controller.popup.mode, native.foreground() == int(controller.popup.winId()), flush=True)
+    print('popup foreground:', controller.popup.mode, native.foreground() == int(controller.popup.winId()),
+          'present_ms', round((time.perf_counter() - before_present) * 1000, 1), flush=True)
 controller.popup.present = traced_present
 editor = QPlainTextEdit()
 editor.setWindowTitle("轻译 · 自动验证用临时输入框")
@@ -87,13 +104,18 @@ try:
     QTest.qWait(200)
     editor.setPlainText("Existing text without a selection.")
     app.clipboard().setText("old-clipboard-must-not-be-used")
-    key(0x70)  # F1 with no selection must open an empty, editable input.
+    opened_at = time.perf_counter()
+    hotkey(1)  # Configured translation shortcut with no selection.
     print('F1 sent (no selection)', flush=True)
     wait_until(lambda: controller.popup.isVisible())
+    report["f1_no_selection_open_ms"] = round((time.perf_counter() - opened_at) * 1000, 1)
     assert controller.popup.source.toPlainText() == ""
     assert controller.popup.output.toPlainText() == ""
     assert app.clipboard().text() == "old-clipboard-must-not-be-used"
     assert "未获取" not in controller.popup.status.text()
+    if "--latency-only" in sys.argv:
+        print(json.dumps(report), flush=True)
+        raise SystemExit(0)
     controller.popup.source.setPlainText("你好，今天很高兴见到你。")
     wait_until(lambda: bool(controller.current_result()))
     english = controller.current_result()
@@ -111,7 +133,7 @@ try:
     app.clipboard().setText("clipboard-before-selection")
     assert native.focus(int(editor.winId()))
     QTest.qWait(150)
-    key(0x70)  # Native F1: Ctrl+C capture from our editor.
+    hotkey(1)  # Native shortcut: Ctrl+C capture from our editor.
     wait_until(lambda: controller.popup.isVisible() and bool(controller.current_result()))
     assert controller.popup.source.toPlainText() == editor.toPlainText()
     assert app.clipboard().text() == "clipboard-before-selection"
@@ -127,7 +149,7 @@ try:
     editor.setPlainText("玩家移动速度")
     editor.selectAll()
     activate_editor(editor)
-    key(0x71)
+    hotkey(2)
     wait_until(lambda: controller.popup.isVisible() and controller.popup.candidates.count() >= 3)
     assert controller.popup.mode == "naming"
     assert controller.popup.source.toPlainText() == "玩家移动速度"
@@ -143,7 +165,7 @@ try:
 
     editor.clear()
     activate_editor(editor)
-    key(0x71)
+    hotkey(2)
     wait_until(lambda: controller.popup.isVisible())
     assert controller.popup.mode == "naming" and not controller.popup.source.toPlainText()
     controller.popup.source.setPlainText("订单缓存管理器")
@@ -157,7 +179,7 @@ try:
     editor.setPlainText("bank")
     editor.selectAll()
     activate_editor(editor)
-    key(0x72)
+    hotkey(3)
     wait_until(lambda: controller.popup.isVisible() and controller.popup.candidates.count() > 1)
     wait_until(lambda: controller.popup.isActiveWindow())
     QTest.qWait(150)
@@ -182,7 +204,7 @@ try:
 
     editor.clear()
     activate_editor(editor)
-    key(0x72)
+    hotkey(3)
     wait_until(lambda: controller.popup.isVisible())
     assert not controller.popup.source.toPlainText()
     controller.popup.source.setPlainText("bank")
@@ -193,7 +215,7 @@ try:
 
     editor.clear()
     activate_editor(editor)
-    key(0x70)
+    hotkey(1)
     wait_until(lambda: controller.popup.isVisible())
     controller.popup.source.setPlainText("retain this input")
     QTest.mouseClick(controller.popup.settings_button, Qt.MouseButton.LeftButton)
@@ -204,9 +226,9 @@ try:
     assert controller.popup.isVisible(), "Settings must not dismiss its owner"
     assert controller.hotkeys.keys is None
     QTest.mouseClick(dialog.hotkey, Qt.MouseButton.LeftButton)
-    key(0x70)
+    hotkey(1)
     wait_until(lambda: not dialog.hotkey.recording)
-    assert dialog.hotkey.shortcut == "F1", "Current global shortcut must be recordable"
+    assert dialog.hotkey.shortcut == controller.settings.hotkey, "Current global shortcut must be recordable"
     QTest.mouseClick(dialog.hotkey, Qt.MouseButton.LeftButton)
     QTest.keyClick(dialog.hotkey, Qt.Key.Key_T, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
     assert dialog.hotkey.shortcut == "Ctrl+Alt+T"

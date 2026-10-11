@@ -2,7 +2,7 @@
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import QAbstractNativeEventFilter
+from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Signal
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.GetForegroundWindow.restype = wintypes.HWND
@@ -98,11 +98,11 @@ class Hotkeys(QAbstractNativeEventFilter):
         self.callback = callback
         self.keys = None
 
-    def configure(self, hotkey, naming_hotkey="F2", dictionary_hotkey="F3"):
-        names = (hotkey, naming_hotkey, dictionary_hotkey)
+    def configure(self, hotkey, naming_hotkey="F2", dictionary_hotkey="F3", reading_hotkey="F4"):
+        names = (hotkey, naming_hotkey, dictionary_hotkey, reading_hotkey)
         parsed = [parse_hotkey(name) for name in names]
         if len(set(parsed)) != len(parsed):
-            raise ValueError("翻译、代码命名与字典不能使用相同的快捷键。")
+            raise ValueError("翻译、代码命名、字典与阅读模式不能使用相同的快捷键。")
         previous = self.keys
         self.unregister()
         for ident, (mods, vk) in enumerate(parsed, 1):
@@ -116,13 +116,58 @@ class Hotkeys(QAbstractNativeEventFilter):
         self.keys = parsed
 
     def unregister(self):
-        for ident in (1, 2, 3):
+        for ident in (1, 2, 3, 4):
             user32.UnregisterHotKey(None, ident)
         self.keys = None
 
     def nativeEventFilter(self, event_type, message):
         msg = wintypes.MSG.from_address(int(message))
-        if msg.message == 0x0312 and msg.wParam in (1, 2, 3):
+        if msg.message == 0x0312 and msg.wParam in (1, 2, 3, 4):
             self.callback(int(msg.wParam))
             return True, 0
         return False, 0
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", wintypes.POINT), ("mouseData", wintypes.DWORD),
+                ("flags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+MOUSEPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)
+user32.SetWindowsHookExW.argtypes = [ctypes.c_int, MOUSEPROC, wintypes.HINSTANCE, wintypes.DWORD]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
+user32.CallNextHookEx.restype = ctypes.c_ssize_t
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+
+
+class MouseObserver(QObject):
+    activity = Signal(int, int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.handle = None
+        self.callback = MOUSEPROC(self._event)
+
+    def start(self):
+        if not self.handle:
+            self.handle = user32.SetWindowsHookExW(14, self.callback, kernel32.GetModuleHandleW(None), 0)
+            if not self.handle:
+                raise OSError(ctypes.get_last_error(), "无法启动阅读模式鼠标监听")
+
+    def stop(self):
+        if self.handle:
+            user32.UnhookWindowsHookEx(self.handle)
+            self.handle = None
+
+    def _event(self, code, message, pointer):
+        # Never copy, translate, or block inside a low-level hook. Qt receives
+        # only button/wheel events via a queued connection; all input passes on.
+        if code >= 0 and message in (0x201, 0x202, 0x204, 0x20A, 0x20E):
+            data = MSLLHOOKSTRUCT.from_address(pointer)
+            self.activity.emit(message, data.pt.x, data.pt.y)
+        return user32.CallNextHookEx(self.handle, code, message, pointer)
