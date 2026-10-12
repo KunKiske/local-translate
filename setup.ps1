@@ -1,3 +1,4 @@
+param([switch]$InstallPython)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $taskTranscript = Join-Path $PSScriptRoot 'install.log'
@@ -7,15 +8,22 @@ try {
         $taskPython = $null
         $taskArguments = @()
         if (Get-Command py -ErrorAction SilentlyContinue) {
-            & py -3.11 '.\scripts\check_runtime.py'
-            if ($LASTEXITCODE -eq 0) { $taskPython = 'py'; $taskArguments = @('-3.11') }
+            foreach ($taskVersion in @('-3', '-3.13', '-3.12', '-3.11', '-3.10')) {
+                & py $taskVersion '.\scripts\check_runtime.py'
+                if ($LASTEXITCODE -eq 0) { $taskPython = 'py'; $taskArguments = @($taskVersion); break }
+            }
         }
         if (-not $taskPython -and (Get-Command python -ErrorAction SilentlyContinue)) {
             & python '.\scripts\check_runtime.py'
             if ($LASTEXITCODE -eq 0) { $taskPython = 'python' }
         }
         if (-not $taskPython) {
-            throw 'Python 3.11 x64 was not found. Install it from https://www.python.org/downloads/windows/ (enable the Python launcher), then run install.cmd again. The portable ZIP does not require Python.'
+            if ($InstallPython) {
+                . (Join-Path $PSScriptRoot 'scripts\install_python.ps1')
+                $taskPython = Get-OrInstallPython
+            } else {
+                throw 'Python 3.10-3.13 x64 was not found. Run the first-run BAT to install Python automatically, or install a supported version and retry install.cmd.'
+            }
         }
         & $taskPython @taskArguments -m venv .venv
         if ($LASTEXITCODE -ne 0) { throw 'Could not create .venv. Check the error above and folder write permissions.' }

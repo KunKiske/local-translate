@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo Preparing LocalTranslate source installation...
-echo Internet access and Python 3.11 x64 are required.
+echo Internet access and Python 3.10-3.13 x64 are required.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
 if errorlevel 1 (
     echo Installation failed. See the error above.

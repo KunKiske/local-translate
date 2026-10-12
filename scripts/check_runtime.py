@@ -1,11 +1,18 @@
 """Console checks used by install.cmd; no model or user configuration is changed."""
 import struct
 import sys
+import sysconfig
+
+
+def supported_runtime(version, bits, implementation, free_threaded=False):
+    return ((3, 10) <= tuple(version[:2]) < (3, 14)
+            and bits == 64 and implementation == "cpython" and not free_threaded)
 
 
 def main():
-    if sys.version_info[:2] != (3, 11) or struct.calcsize("P") != 8:
-        print("Python 3.11 x64 is required. Detected:", sys.version, file=sys.stderr)
+    if not supported_runtime(sys.version_info, struct.calcsize("P") * 8,
+                             sys.implementation.name, sysconfig.get_config_var("Py_GIL_DISABLED")):
+        print("CPython 3.10-3.13 x64 (standard build) is required. Detected:", sys.version, file=sys.stderr)
         return 1
     if "--dependencies" in sys.argv:
         # Match main.py's native-library import order.

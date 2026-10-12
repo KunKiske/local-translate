@@ -4,13 +4,17 @@
 
 ## 启动
 
-**直接使用（推荐）**：从 [GitHub Releases 下载 Windows 程序包](https://github.com/KunKiske/local-translate/releases/latest/download/LocalTranslate-Windows-x64.zip)，完整解压后双击 `LocalTranslate.exe`，首次启动在设置里选择你自己的模型文件夹即可。程序包包含运行依赖和离线词典，**不包含模型，也不需要安装 Python 或运行 setup**。请下载名称为 `LocalTranslate-Windows-x64.zip` 的附件；GitHub 自动提供的 `Source code` 是源码。
+**新用户从源码开始（推荐）**：GitHub → Code → Download ZIP → 完整解压 → 双击根目录的 **`首次运行.bat`**。保持联网，脚本会检查 Python、创建独立环境、安装依赖和准备离线词典，成功后自动打开模型设置。选择自己的模型文件夹，例如 `D:\Models\NLLB-600M`，先用 CPU + int8，保存即可。**无需自己输入命令或编译 EXE，不会下载模型，也不会覆盖已有配置。**
+
+支持标准版 **CPython 3.10–3.13 x64**，包括另一台电脑已安装的 Python 3.13；补丁版本不限。优先沿用项目环境或已安装的兼容版本，找不到才从 python.org 下载并校验签名，安装 Python 3.11.9 到当前用户目录。不修改系统 PATH，不卸载其他版本。3.14、32 位、自由线程版暂不支持；安装后还会检查 Qt、推理库 DLL 和词典查询支持。
+
+首次运行期间不要关闭安装窗口；失败时窗口会保留原因，详细日志是根目录的 `install.log`。修复网络等问题后可以重新运行 BAT。安装成功后，日常只需双击 `启动翻译工具.vbs`；启动异常时双击 `diagnose.cmd` 查看错误。
 
 **Git 克隆 / GitHub「Download ZIP」得到的是源码**，不包含 Python 环境、打包程序、离线词典数据库或模型，不能直接双击启动。
 
-- **从源码首次安装**：先安装 Python 3.11 x64（保留 Python launcher 选项），完整解压仓库后，双击 `install.cmd`。它会创建环境、安装依赖、检查 DLL 并准备离线字典；需要联网。窗口会保留成功或失败信息，日志保存在项目目录的 `install.log`。成功后再双击启动文件，首次使用在设置中选择本机模型文件夹。
+- **已自行安装 Python**：也可以双击 `install.cmd`，它只配置项目环境，不自动安装 Python。成功后双击启动文件。
 - **另一台电脑直接使用**：复制完整的 `dist\LocalTranslate` 文件夹，或使用制作好的 Windows 便携 ZIP，先完整解压，再双击里面的 `LocalTranslate.exe`。无需 Python。含模型的包会自动识别 exe 旁 `models\NLLB-600M`，首次使用默认 CPU + int8；不含模型的包需要自行选择模型。已有配置不会覆盖。
-- Windows 隐藏已知扩展名时，`setup.ps1` 会显示为 `setup`，`install.cmd` 会显示为 `install`。安装请双击 **install**，不要只双击 PowerShell 脚本。若安装后启动仍失败，可双击 `diagnose.cmd` 查看错误。
+- Windows 隐藏已知扩展名时，`首次运行.bat` 显示为 **首次运行**，`setup.ps1` 显示为 `setup`。新用户请双击 **首次运行**，不要只双击 PowerShell 脚本。
 
 双击 `启动翻译工具.vbs`，或运行 `dist\LocalTranslate\LocalTranslate.exe`。启动后常驻系统托盘，图标为蓝底「译」；模型就绪后会有提示。托盘图标可能收在 Windows 的隐藏图标区域。重复启动会提示程序已在运行。
 
@@ -93,7 +97,7 @@ CPU 通过中央处理器计算，兼容性好，推荐 int8。CUDA 通过 NVIDI
 
 ## 源码运行 / 打包
 
-Windows x64、Python 3.11：
+Windows x64、标准 CPython 3.10–3.13（当前打包环境为 3.11）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
