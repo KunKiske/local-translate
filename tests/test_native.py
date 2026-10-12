@@ -34,3 +34,36 @@ def test_hotkey_letter_still_held_blocks_copy(monkeypatch):
     monkeypatch.setattr(native.user32, "GetAsyncKeyState", lambda vk: 0x8000 if vk == ord("Q") else 0)
     assert native.hotkey_pressed("Alt+Q")
     assert not native.hotkey_pressed("F1")
+
+
+def test_external_enter_consumes_repeat_and_keyup_after_disarm(monkeypatch):
+    observer = native.ExternalEnter()
+    received = []
+    observer.requested.connect(received.append)
+    monkeypatch.setattr(native, "external_focus", lambda: (123, 456))
+    monkeypatch.setattr(native, "modifiers_pressed", lambda: False)
+    monkeypatch.setattr(native.user32, "CallNextHookEx", lambda *args: 0)
+    key = native.KBDLLHOOKSTRUCT(vkCode=0x0D)
+    send = lambda message: observer._event(0, message, ctypes.addressof(key))
+    assert send(0x100) == 0
+    observer.armed = True
+    assert send(0x100) == 1
+    observer.armed = False  # The queued submission closed the translation popup.
+    assert send(0x100) == 1 and send(0x101) == 1
+    assert received == [(123, 456)] and not observer.held
+    assert send(0x100) == 0
+
+
+@pytest.mark.parametrize("modified,context,flags,vk", [(True, (123, 456), 0, 13),
+    (False, None, 0, 13), (False, (123, 456), 0, 65)])
+def test_external_enter_leaves_other_input_alone(monkeypatch, modified, context, flags, vk):
+    observer = native.ExternalEnter()
+    observer.armed = True
+    received = []
+    observer.requested.connect(received.append)
+    monkeypatch.setattr(native, "external_focus", lambda: context)
+    monkeypatch.setattr(native, "modifiers_pressed", lambda: modified)
+    monkeypatch.setattr(native.user32, "CallNextHookEx", lambda *args: 0)
+    key = native.KBDLLHOOKSTRUCT(vkCode=vk, flags=flags)
+    assert observer._event(0, 0x100, ctypes.addressof(key)) == 0
+    assert not received

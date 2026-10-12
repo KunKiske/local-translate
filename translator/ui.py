@@ -280,7 +280,7 @@ class Popup(QWidget):
         self.source.setMaximumHeight(72 if dictionary else 16777215)
         self.candidates.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if dictionary else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.results.setCurrentWidget(self.candidates if multiple else self.output)
-        self.footer.setText("单击输出 · ↑↓ 选择 · Enter 确认" if multiple else "关闭复制 · Enter 粘贴 · Shift+Enter 换行")
+        self.footer.setText("点击目标输入框 · Enter 输出" if multiple else "点击目标输入框 · Enter 粘贴")
         self.send.setText("输出选中 ↵" if multiple else "粘贴并关闭 ↵")
         self.layout().setStretchFactor(self.results, 2 if multiple else 1)
         self.set_simple(self.simple)
@@ -362,22 +362,6 @@ class Popup(QWidget):
         self.activateWindow()
         native.focus(int(self.winId()))
         self.source.setFocus()
-
-    def event(self, event):
-        if event.type() == QEvent.Type.WindowDeactivate and self.isVisible():
-            QTimer.singleShot(100, self.close_if_inactive)
-        return super().event(event)
-
-    def close_if_inactive(self):
-        if self.settings_open:
-            return
-        active_popup = QApplication.activePopupWidget()
-        if self.direction.view().isVisible() or (active_popup and self.isAncestorOf(active_popup)):
-            # Opening our combobox or context menu is not an outside click.
-            QTimer.singleShot(100, self.close_if_inactive)
-            return
-        if self.isVisible() and not self.isActiveWindow():
-            self.close()
 
     def closeEvent(self, event):
         self.dismissed.emit()
@@ -564,6 +548,14 @@ class Controller(QObject):
         self.popup.winId()
         self.popup.grab()
         self.target = None
+        self.target_control = None
+        self.submit_destination = None
+        self.external_enter = native.ExternalEnter(self)
+        self.external_enter.requested.connect(self.submit_external, Qt.ConnectionType.QueuedConnection)
+        self.native_input_enabled = register_hotkeys
+        self.target_timer = QTimer(self)
+        self.target_timer.setInterval(75)
+        self.target_timer.timeout.connect(self.track_target)
         self.revision = 0
         self.result_revision = -1
         self.submit_pending = False
@@ -673,6 +665,7 @@ class Controller(QObject):
         self.enqueue(None)
 
     def show_settings(self):
+        self.external_enter.armed = False
         self.reading.dismiss()
         self.capture_revision += 1
         self.capturing = False
@@ -694,6 +687,7 @@ class Controller(QObject):
 
     def settings_closed(self, result):
         self.popup.settings_open = False
+        self.update_external_enter()
         if self.hotkeys_suspended and not self.quitting and not self.hotkeys.keys:
             try:
                 self.hotkeys.configure(self.settings.hotkey, self.settings.naming_hotkey, self.settings.dictionary_hotkey, self.settings.reading_hotkey)
@@ -748,6 +742,7 @@ class Controller(QObject):
         self.start_popup("", mode)
 
     def start_popup(self, text, mode="translate"):
+        self.target_control = None
         self.reading.dismiss()
         self.popup.set_mode(mode)
         hint = self.popup.input_hint()
@@ -757,6 +752,13 @@ class Controller(QObject):
         self.popup.source.blockSignals(False)
         self.edited()
         self.popup.present()
+        self.target_timer.start()
+        if self.native_input_enabled:
+            try:
+                self.external_enter.start()
+            except OSError as exc:
+                self.notify(str(exc))
+        self.update_external_enter()
         if text:
             self.timer.stop()
             self.translate()
@@ -819,10 +821,12 @@ class Controller(QObject):
         self.cancel.set()
         self.pending = None
         self.submit_pending = False
+        self.submit_destination = None
         self.result_revision = -1
         self.popup.output.clear()
         self.popup.candidates.clear()
         text = self.popup.source.toPlainText().strip()
+        self.update_external_enter()
         self.popup.send.setEnabled(bool(text))
         self.timer.stop()
         if text:
@@ -908,6 +912,8 @@ class Controller(QObject):
         return self.popup.output.toPlainText().strip()
 
     def dismissed(self):
+        self.external_enter.armed = False
+        self.target_timer.stop()
         self.reading.dismiss()
         result = self.current_result()
         if result:
@@ -918,9 +924,31 @@ class Controller(QObject):
         self.cancel.set()
         self.pending = None
         self.submit_pending = False
+        self.submit_destination = None
         self.timer.stop()
 
+    def update_external_enter(self):
+        self.external_enter.armed = bool(self.popup.isVisible() and not self.popup.settings_open
+                                         and not self.quitting and self.popup.source.toPlainText().strip())
+
+    def track_target(self):
+        if self.popup.isVisible() and not self.popup.settings_open:
+            context = native.external_focus()
+            if context:
+                self.target, self.target_control = context
+
+    def submit_external(self, context):
+        if not self.external_enter.armed or native.external_focus() != context:
+            return
+        self.target, self.target_control = context
+        self.submit()
+
     def submit(self):
+        if self.popup.settings_open:
+            return
+        if not self.submit_pending:
+            self.track_target()
+            self.submit_destination = (self.target, self.target_control, native.external_focus() is not None)
         result = self.current_result()
         if not result:
             if self.popup.mode == "dictionary" and self.result_revision == self.revision:
@@ -933,8 +961,11 @@ class Controller(QObject):
                     self.translate()
                 self.popup.set_status("正在查询，完成后将输出首个词义并关闭…" if self.popup.mode == "dictionary" else "正在生成，完成后将输出首个候选并关闭…" if self.popup.mode == "naming" else "正在翻译，完成后将自动粘贴并关闭…")
             return
-        target = self.target
+        target, control, external = self.submit_destination or (self.target, self.target_control, False)
         self.popup.close()
+        if external and native.external_focus() != (target, control):
+            self.notify("目标输入框已改变。内容已复制，请手动 Ctrl+V。")
+            return
         if not target or target == int(self.popup.winId()) or not native.focus(target):
             self.notify("内容已复制，请在目标输入框按 Ctrl+V 粘贴。")
             return
@@ -942,6 +973,9 @@ class Controller(QObject):
         def paste():
             if native.foreground() != target:
                 self.notify("目标窗口已改变。内容已复制，请手动 Ctrl+V。")
+                return
+            if control and native.external_focus() != (target, control):
+                self.notify("目标输入框已改变。内容已复制，请手动 Ctrl+V。")
                 return
             if native.modifiers_pressed() or native.user32.GetAsyncKeyState(0x0D) & 0x8000:
                 if time.monotonic() < deadline:
@@ -958,6 +992,7 @@ class Controller(QObject):
     def quit(self):
         self.quitting = True
         self.reading.stop()
+        self.external_enter.stop()
         self.hotkeys.unregister()
         self.popup.close()
         if self.dialog:

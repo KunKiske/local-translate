@@ -21,10 +21,13 @@ def app():
 def controller(app, monkeypatch):
     monkeypatch.setattr(ui.Controller, "preload", lambda self: None)
     monkeypatch.setattr(ui.native, "focus", lambda hwnd: True)
+    monkeypatch.setattr(ui.native, "external_focus", lambda: None)
     obj = ui.Controller(app, register_hotkeys=False)
     monkeypatch.setattr(obj, "notify", lambda text: None)
     yield obj
     obj.reading.stop()
+    obj.external_enter.stop()
+    obj.target_timer.stop()
     obj.cancel.set()
     obj.pending = None
     if obj.dialog:
@@ -80,6 +83,60 @@ def test_enter_copies_closes_and_pastes(controller, app, monkeypatch):
     assert app.clipboard().text() == "Test"
     assert not controller.popup.isVisible()
     assert calls == ["V"]
+
+
+def test_outside_focus_keeps_popup_and_targets_new_input(controller, app, monkeypatch):
+    from PySide6.QtCore import QEvent
+    calls = []
+    ready(controller)
+    controller.target = 123
+    app.clipboard().setText("keep until confirmed")
+    monkeypatch.setattr(ui.native, "external_focus", lambda: (456, 789))
+    monkeypatch.setattr(ui.native, "foreground", lambda: 456)
+    monkeypatch.setattr(ui.native, "modifiers_pressed", lambda: False)
+    monkeypatch.setattr(ui.native.user32, "GetAsyncKeyState", lambda key: 0)
+    monkeypatch.setattr(ui.native, "shortcut", calls.append)
+    app.sendEvent(controller.popup, QEvent(QEvent.Type.WindowDeactivate))
+    QTest.qWait(150)
+    assert controller.popup.isVisible() and controller.target == 456
+    assert app.clipboard().text() == "keep until confirmed"
+    controller.submit_external((456, 789))
+    QTest.qWait(180)
+    assert calls == ["V"] and app.clipboard().text() == "Test"
+    assert not controller.popup.isVisible() and not controller.external_enter.armed
+
+
+@pytest.mark.parametrize("new_context", [(456, 999), (999, 777)])
+def test_external_pending_enter_never_pastes_into_changed_target(controller, app, monkeypatch, new_context):
+    context = [(456, 789)]
+    calls = []
+    monkeypatch.setattr(controller, "enqueue", lambda text: None)
+    monkeypatch.setattr(ui.native, "external_focus", lambda: context[0])
+    monkeypatch.setattr(ui.native, "shortcut", calls.append)
+    controller.start_popup("hello")
+    controller.timer.stop()
+    controller.submit_external(context[0])
+    assert controller.submit_pending
+    context[0] = new_context
+    controller.track_target()
+    controller.active_job = (controller.revision, "hello")
+    controller.completed(controller.revision, "你好", "")
+    QTest.qWait(180)
+    assert not calls and app.clipboard().text() == "你好"
+    assert not controller.popup.isVisible()
+
+
+def test_external_enter_inactive_for_empty_popup_or_settings(controller):
+    controller.start_popup("")
+    assert not controller.external_enter.armed
+    controller.popup.source.setPlainText("hello")
+    assert controller.external_enter.armed
+    controller.show_settings()
+    assert not controller.external_enter.armed
+    controller.dialog.close()
+    assert controller.external_enter.armed
+    controller.popup.close()
+    assert not controller.external_enter.armed
 
 
 def test_enter_while_loading_and_focus_change(controller, monkeypatch):
@@ -238,7 +295,7 @@ def test_settings_button_opens_owned_dialog_without_copying(controller, app):
     QTest.mouseClick(controller.popup.settings_button, Qt.MouseButton.LeftButton)
     assert controller.dialog and controller.dialog.isVisible()
     assert controller.dialog.parentWidget() == controller.popup
-    controller.popup.close_if_inactive()
+    app.processEvents()
     assert controller.popup.isVisible()
     assert app.clipboard().text() == "unchanged"
     controller.dialog.reject()
@@ -265,7 +322,7 @@ def test_dropdown_light_palette_and_owner_stays_open(controller, app, monkeypatc
     assert view.palette().color(QPalette.ColorRole.Text).lightness() < 80
     controller.popup.direction.showPopup()
     monkeypatch.setattr(controller.popup, "isActiveWindow", lambda: False)
-    controller.popup.close_if_inactive()
+    app.processEvents()
     assert controller.popup.isVisible()
     controller.popup.direction.hidePopup()
 

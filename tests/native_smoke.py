@@ -140,12 +140,15 @@ try:
     chinese = controller.current_result()
     assert any("\u4e00" <= ch <= "\u9fff" for ch in chinese)
     report["f1_capture_and_restore"] = chinese
-    # A genuine foreground change exercises outside-click dismissal behavior.
+    # Losing focus keeps the popup open and leaves the clipboard untouched.
     editor.activateWindow()
     native.focus(int(editor.winId()))
-    wait_until(lambda: not controller.popup.isVisible())
+    QTest.qWait(200)
+    assert controller.popup.isVisible()
+    assert app.clipboard().text() == "clipboard-before-selection"
+    controller.popup.close()
     assert app.clipboard().text() == chinese
-    report["deactivate_closes_and_copies"] = True
+    report["deactivate_keeps_popup_and_explicit_close_copies"] = True
     editor.setPlainText("玩家移动速度")
     editor.selectAll()
     activate_editor(editor)

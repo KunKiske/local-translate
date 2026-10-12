@@ -1,6 +1,7 @@
 """Small, typed Win32 bridge: hotkeys, foreground focus, and keyboard input."""
 import ctypes
 import logging
+import os
 from ctypes import wintypes
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Signal
@@ -60,6 +61,23 @@ user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO
 user32.GetGUIThreadInfo.restype = wintypes.BOOL
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClipboardOwner.restype = wintypes.HWND
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+
+def external_focus():
+    hwnd = foreground()
+    pid = wintypes.DWORD()
+    thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) if hwnd else 0
+    if not thread or pid.value == os.getpid():
+        return None
+    info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    if not user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
+        return None
+    # Menus and move/resize loops are not text destinations.
+    if info.flags & 0x1E:
+        return None
+    return hwnd, info.hwndFocus
 
 
 def capture_context():
@@ -227,4 +245,50 @@ class MouseObserver(QObject):
         if code >= 0 and message in (0x201, 0x202, 0x204, 0x20A, 0x20E):
             data = MSLLHOOKSTRUCT.from_address(pointer)
             self.activity.emit(message, data.pt.x, data.pt.y)
+        return user32.CallNextHookEx(self.handle, code, message, pointer)
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
+                ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class ExternalEnter(QObject):
+    """Consume one plain Enter outside this process while a popup is armed."""
+    requested = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.armed = False
+        self.held = False
+        self.handle = None
+        self.callback = MOUSEPROC(self._event)  # Same native callback signature.
+
+    def start(self):
+        if not self.handle:
+            self.handle = user32.SetWindowsHookExW(13, self.callback, kernel32.GetModuleHandleW(None), 0)
+            if not self.handle:
+                raise OSError(ctypes.get_last_error(), "无法监听外部回车，请点击弹框的输出按钮。")
+
+    def stop(self):
+        self.armed = False
+        if self.handle:
+            user32.UnhookWindowsHookEx(self.handle)
+            self.handle = None
+
+    def _event(self, code, message, pointer):
+        if code >= 0:
+            key = KBDLLHOOKSTRUCT.from_address(pointer)
+            if key.vkCode == 0x0D:
+                if self.held:
+                    if message in (0x101, 0x105):
+                        self.held = False
+                    return 1  # Swallow repeat + matching key-up, even after close.
+                if self.armed and message == 0x100 and not modifiers_pressed():
+                    target = external_focus()
+                    if target:
+                        self.held = True
+                        self.requested.emit(target)  # Queued; never paste in the hook.
+                        return 1
         return user32.CallNextHookEx(self.handle, code, message, pointer)
