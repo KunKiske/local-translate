@@ -1,0 +1,9 @@
+{
+  "package": "LocalTranslate-Windows-x64-with-NLLB-600M.zip",
+  "size_mib": 704.5,
+  "fresh_profile_cpu_smoke": true,
+  "no_python_or_cuda_on_path": true,
+  "bundled_model_auto_detected": true,
+  "user_config_not_written": true,
+  "smoke_seconds": 2.04
+}

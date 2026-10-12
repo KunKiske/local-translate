@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+release/
+models/
 *.log
 *.lnk
 data/ecdict.csv

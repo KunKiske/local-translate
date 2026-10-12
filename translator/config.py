@@ -1,6 +1,7 @@
 import json
 import os
-from dataclasses import asdict, dataclass
+import sys
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -8,9 +9,18 @@ APP_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "LocalTranslate"
 CONFIG_FILE = APP_DIR / "settings.json"
 
 
+def default_model_path():
+    root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+    bundled = root / "models" / "NLLB-600M"
+    if (bundled / "model.bin").is_file():
+        return str(bundled)
+    legacy = Path(r"G:\Models\NLLB-600M")
+    return str(legacy if (legacy / "model.bin").is_file() else bundled)
+
+
 @dataclass
 class Settings:
-    model_path: str = r"G:\Models\NLLB-600M"
+    model_path: str = field(default_factory=default_model_path)
     device: str = "cpu"
     compute_type: str = "int8"
     hotkey: str = "F1"

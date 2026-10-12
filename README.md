@@ -1,8 +1,16 @@
 # 轻译 · Windows 本地翻译
 
-中英互译、代码命名与离线字典，使用本机 NLLB 模型、本地命名规则和 ECDICT 词典运行。已默认配置 `G:\Models\NLLB-600M`，运行时无需联网，不上传文本。
+中英互译、代码命名与离线字典，使用本机 NLLB 模型、本地命名规则和 ECDICT 词典运行。运行时无需联网，不上传文本。
 
 ## 启动
+
+**直接使用（推荐）**：从 [GitHub Releases 下载 Windows 程序包](https://github.com/KunKiske/local-translate/releases/latest/download/LocalTranslate-Windows-x64.zip)，完整解压后双击 `LocalTranslate.exe`，首次启动在设置里选择你自己的模型文件夹即可。程序包包含运行依赖和离线词典，**不包含模型，也不需要安装 Python 或运行 setup**。请下载名称为 `LocalTranslate-Windows-x64.zip` 的附件；GitHub 自动提供的 `Source code` 是源码。
+
+**Git 克隆 / GitHub「Download ZIP」得到的是源码**，不包含 Python 环境、打包程序、离线词典数据库或模型，不能直接双击启动。
+
+- **从源码首次安装**：先安装 Python 3.11 x64（保留 Python launcher 选项），完整解压仓库后，双击 `install.cmd`。它会创建环境、安装依赖、检查 DLL 并准备离线字典；需要联网。窗口会保留成功或失败信息，日志保存在项目目录的 `install.log`。成功后再双击启动文件，首次使用在设置中选择本机模型文件夹。
+- **另一台电脑直接使用**：复制完整的 `dist\LocalTranslate` 文件夹，或使用制作好的 Windows 便携 ZIP，先完整解压，再双击里面的 `LocalTranslate.exe`。无需 Python。含模型的包会自动识别 exe 旁 `models\NLLB-600M`，首次使用默认 CPU + int8；不含模型的包需要自行选择模型。已有配置不会覆盖。
+- Windows 隐藏已知扩展名时，`setup.ps1` 会显示为 `setup`，`install.cmd` 会显示为 `install`。安装请双击 **install**，不要只双击 PowerShell 脚本。若安装后启动仍失败，可双击 `diagnose.cmd` 查看错误。
 
 双击 `启动翻译工具.vbs`，或运行 `dist\LocalTranslate\LocalTranslate.exe`。启动后常驻系统托盘，图标为蓝底「译」；模型就绪后会有提示。托盘图标可能收在 Windows 的隐藏图标区域。重复启动会提示程序已在运行。
 
@@ -55,7 +63,7 @@
 
 **快捷键点击录制**：点击当前快捷键按钮，然后按下单键或组合键，例如 F1 或 Ctrl+Alt+T，无需输入文字。再次点击按钮或按 Esc 取消；切换到其他控件、关闭设置或切到别的窗口也会取消录制。按「保存并应用」后生效。设置窗口打开期间暂停全局快捷键，关闭后恢复，避免录制 F1 时误打开翻译框。
 
-本版支持 **CTranslate2 格式的 NLLB 系列模型**（如 distilled-600M、1.3B），文件夹至少应含 `model.bin`、`config.json`、`tokenizer.json`。不是通用 GGUF / Ollama 模型加载器，原始 Hugging Face 的 safetensors / pytorch_model.bin 权重需要先转换为 CTranslate2 格式。当前提供的 G 盘模型已经是可直接使用的格式。
+本版支持 **CTranslate2 格式的 NLLB 系列模型**（如 distilled-600M、1.3B），文件夹至少应含 `model.bin`、`config.json`、`tokenizer.json`。不是通用 GGUF / Ollama 模型加载器，原始 Hugging Face 的 safetensors / pytorch_model.bin 权重需要先转换为 CTranslate2 格式。模型应复制完整文件夹；另一台电脑不需要相同的盘符。缺省模型优先识别程序旁的 `models\NLLB-600M`，其次兼容原来 G 盘的位置；已保存的模型路径仍以用户设置为准。
 
 默认 CPU + int8，不需要显卡。CUDA 模式需自行安装匹配 CTranslate2 的 CUDA / cuBLAS 等运行库；不满足条件时会显示加载错误，可切回 CPU。首次翻译包含模型加载耗时，之后复用已加载模型。
 
@@ -97,5 +105,14 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
 分发时复制整个 `dist\LocalTranslate` 文件夹，不能只复制 exe。模型独立存放，不打入程序，换电脑后在设置中重新选择模型目录。
+
+制作便携压缩包（输出到 `release`，不纳入 Git）：
+
+```powershell
+# 不含模型
+.\.venv\Scripts\python.exe scripts/package_portable.py
+# 包含本地模型；保留模型 README 及授权文件，不包含个人设置
+.\.venv\Scripts\python.exe scripts/package_portable.py --model 'G:\Models\NLLB-600M'
+```
 
 实现参考：[CTranslate2 的 NLLB 用法](https://opennmt.net/CTranslate2/guides/transformers.html#nllb)、[NLLB 分词约定](https://huggingface.co/docs/transformers/model_doc/nllb)、[Windows 全局快捷键](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)、[Windows SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)。
