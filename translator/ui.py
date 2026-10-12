@@ -173,7 +173,7 @@ class CandidateDelegate(QStyledItemDelegate):
 class Popup(QWidget):
     changed = Signal()
     submit = Signal()
-    dismissed = Signal()
+    dismissed = Signal(bool)
     settings_requested = Signal()
     candidate_chosen = Signal()
 
@@ -189,6 +189,7 @@ class Popup(QWidget):
         self.status_error = False
         self.choice_by_mode = {"translate": "auto", "naming": "camel", "dictionary": "auto"}
         self.drag_origin = None
+        self.copy_on_close = True
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
@@ -364,12 +365,17 @@ class Popup(QWidget):
         self.source.setFocus()
 
     def closeEvent(self, event):
-        self.dismissed.emit()
+        self.dismissed.emit(self.copy_on_close)
         event.accept()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.close()
+            self.copy_on_close = False
+            try:
+                self.close()
+            finally:
+                self.copy_on_close = True
+            event.accept()
         elif event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
             self.submit.emit()
         else:
@@ -890,7 +896,7 @@ class Controller(QObject):
                 else:
                     self.popup.output.setPlainText(result)
                     src, _ = language_pair(self.popup.source.toPlainText(), self.popup.direction.currentData())
-                    self.popup.set_status(("中文 → English" if src == "zho_Hans" else "English → 中文") + " · 翻译完成 · 关闭窗口自动复制")
+                    self.popup.set_status(("中文 → English" if src == "zho_Hans" else "English → 中文") + " · 翻译完成 · Esc 取消，其他关闭复制")
                 if self.submit_pending:
                     self.submit()
         self.dispatch_next()
@@ -911,14 +917,14 @@ class Controller(QObject):
             return item.data(Qt.ItemDataRole.UserRole) if item else ""
         return self.popup.output.toPlainText().strip()
 
-    def dismissed(self):
+    def dismissed(self, copy_result=True):
         self.external_enter.armed = False
         self.target_timer.stop()
         self.reading.dismiss()
         result = self.current_result()
-        if result:
+        if copy_result and result:
             self.app.clipboard().setText(result)
-        elif self.popup.source.toPlainText().strip() and not self.quitting:
+        elif copy_result and self.popup.source.toPlainText().strip() and not self.quitting:
             self.notify("窗口已关闭，当前结果尚未完成，剪贴板保持原样。")
         self.revision += 1
         self.cancel.set()

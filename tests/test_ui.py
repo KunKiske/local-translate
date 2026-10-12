@@ -54,6 +54,53 @@ def test_close_copies_current_result(controller, app):
     assert not controller.popup.isVisible()
 
 
+@pytest.mark.parametrize("mode,focus", [("translate", "source"), ("translate", "output"),
+                                      ("naming", "source"), ("naming", "candidates"),
+                                      ("dictionary", "source"), ("dictionary", "candidates")])
+def test_escape_preserves_clipboard_and_later_normal_close_still_copies(controller, app, mode, focus, monkeypatch):
+    from PySide6.QtCore import QMimeData
+    monkeypatch.setattr(controller, "enqueue", lambda text: None)
+    controller.start_popup("hello", mode)
+    controller.timer.stop()
+    if mode == "translate":
+        controller.popup.output.setPlainText("result")
+    else:
+        controller.popup.show_candidates([{"name": "result", "label": "candidate"}])
+    controller.result_revision = controller.revision
+    original = QMimeData()
+    original.setText("keep original")
+    original.setHtml("<b>keep original</b>")
+    app.clipboard().setMimeData(original)
+    QTest.keyClick(getattr(controller.popup, focus), Qt.Key.Key_Escape)
+    assert not controller.popup.isVisible()
+    assert app.clipboard().text() == "keep original"
+    assert app.clipboard().mimeData().html() == "<b>keep original</b>"
+    assert not controller.external_enter.armed
+    ready(controller)
+    controller.popup.close()
+    assert app.clipboard().text() == "Test"
+
+
+def test_escape_cancels_pending_enter_and_ignores_late_translation(controller, app, monkeypatch):
+    monkeypatch.setattr(controller, "enqueue", lambda text: None)
+    calls = []
+    monkeypatch.setattr(ui.native, "shortcut", calls.append)
+    controller.start_popup("hello")
+    controller.submit()
+    old_revision = controller.revision
+    assert controller.submit_pending
+    app.clipboard().setText("keep original")
+    QTest.keyClick(controller.popup.source, Qt.Key.Key_Escape)
+    assert not controller.popup.isVisible()
+    assert controller.cancel.is_set() and not controller.submit_pending
+    assert controller.pending is None and not controller.timer.isActive()
+    controller.active_job = (old_revision, "hello")
+    controller.completed(old_revision, "late translation", "")
+    QTest.qWait(180)
+    assert app.clipboard().text() == "keep original"
+    assert not calls
+
+
 def test_edit_invalidates_old_result(controller, app):
     ready(controller)
     app.clipboard().setText("original")
