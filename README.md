@@ -10,6 +10,12 @@
 
 首次运行期间不要关闭安装窗口；失败时窗口会保留原因，详细日志是根目录的 `install.log`。修复网络等问题后可以重新运行 BAT。安装成功后，日常只需双击 `启动翻译工具.vbs`；启动异常时双击 `diagnose.cmd` 查看错误。
 
+**没有模型？双击根目录的 `下载模型.bat`**（隐藏扩展名时显示为「下载模型」）。它无需 Python，会下载可直接使用的 NLLB-600M CTranslate2 INT8 模型，约 **617 MiB**，保存到项目目录的 `models\NLLB-600M`。下载完成后，在软件设置中选择这个文件夹；尚未配置过的新用户会自动识别该默认位置，已有设置保持不变。可以先下载模型，再运行「首次运行」。
+
+下载支持断点续传、固定版本及 SHA256 完整性校验，已经完整下载的文件会跳过；失败后可再次双击重试，日志是 `download-model.log`。需要能够访问 Hugging Face，脚本使用 Windows 10/11 自带的 `curl.exe`。同名文件内容不一致时会停止并保留原文件，避免覆盖已有模型。模型文件被 Git 忽略，不会提交到仓库。
+
+模型来自 [JustFrederik 的 CTranslate2 转换版本](https://huggingface.co/JustFrederik/nllb-200-distilled-600M-ct2-int8/tree/302d78f00e6fdb50a1064059df7c392b735e9d05)，基于 Meta NLLB-200 distilled-600M，采用 **CC-BY-NC-4.0（非商业）** 许可；下载会保留原模型 README 和授权信息。已有兼容模型的用户无需重复下载。
+
 **Git 克隆 / GitHub「Download ZIP」得到的是源码**，不包含 Python 环境、打包程序、离线词典数据库或模型，不能直接双击启动。
 
 - **已自行安装 Python**：也可以双击 `install.cmd`，它只配置项目环境，不自动安装 Python。成功后双击启动文件。
